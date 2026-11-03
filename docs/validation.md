@@ -14,6 +14,23 @@
 - Subsequent Mac deployment: installed the per-user launch agent on an M4 Pro Mac mini running macOS 26.5. Verified background startup, restrictive file permissions, loopback/tailnet-only listeners, and fresh CPU, RAM, and Apple GPU readings received by the Windows viewer machine. macOS Tailscale's bundled executable requires `TAILSCALE_BE_CLI=1` in the launchd environment; the installer now sets it explicitly.
 - Independent source review: three recovery/scheduling findings were fixed with regression tests. Review is not evidence of physical hardware testing.
 
+## Mac mini lifecycle and load checks
+
+Additional checks on an Apple M4 Pro Mac mini running macOS 26.5:
+
+- Forced agent termination: launchd restarted the agent automatically, with a new boot ID and advancing fresh readings.
+- LaunchAgent unload/reload: bootout followed by bootstrap started collection again. This verifies job loading, not an actual logout/login or system reboot.
+- CPU: an eight-worker, 25-second workload was reflected in CPU readings. Every snapshot in the load phase was fresh.
+- RAM: a touched, nonrepeating 512 MiB allocation was held for 25 seconds. Reported memory usage rose during the allocation and returned near the preceding level after release.
+- GPU: a 25-second Metal compute workload reached measured full GPU activity, and readings returned to the preceding idle range afterward. Every snapshot in the load phase was fresh.
+- The first GPU sample after each agent restart was explicitly marked as warming up. Subsequent GPU samples became valid; CPU/RAM collection continued independently.
+- Tailscale down/up: during an eight-second disconnect, the agent returned `tailscale_unavailable`. After reconnection it resumed fresh, advancing snapshots with the original node identity.
+- No macOS thermal or performance warning was reported. Temporary workload files and the test SSH tunnel were removed, and the agent was left running.
+
+The Windows viewer changed to a different tailnet during setup. The first direct-address test run therefore could not reach the Mac and is not counted as a pass. The completed checks used an SSH tunnel over the local network to the Mac's loopback endpoint, preserving the user's active Windows connection. This exercises collection, agent lifecycle, and the Tailscale identity gate; it is not an end-to-end test of the Windows panel over Tailscale during that disconnect.
+
+Full sleep/wake, actual reboot/sign-in, and a multi-hour soak remain pending. An unattended timed wake could not be arranged with the available administrator access.
+
 ## Local overhead
 
 A 302-second run with the tray panel closed measured the pre-review Windows build:
