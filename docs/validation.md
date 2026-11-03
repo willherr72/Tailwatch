@@ -8,7 +8,8 @@
 - Local integration: actual Tailscale discovery, the local Rust HTTP endpoint, and C# protocol validation produced fresh CPU/RAM data. Only this computer was used for the live integration test.
 - NVIDIA hardware: an RTX 5070 Laptop GPU with driver 581.80 returned `Unknown` from a long-lived NVML session while a fresh session returned valid idle readings. Recovery now retries once with a fresh session within the sample; 20 consecutive two-second observations then returned valid measured zero and the live Rust/C# check reported GPU status `ok`. Failed NVML initialization backs off for 30 seconds. Sustained compute load and driver replacement remain untested.
 - Native CI: Windows x64, Ubuntu 22.04 x64, and macOS 14 arm64 built and passed Rust tests/Clippy. Windows CI also passed viewer tests, native UI smoke, and self-contained publishing.
-- Installer validation: PowerShell parsing and Bash syntax checks. No remote service installation was performed.
+- Installer validation: PowerShell parsing and Bash syntax checks, plus the live Mac installation described below.
+- Subsequent Mac deployment: installed the per-user launch agent on an M4 Pro Mac mini running macOS 26.5. Verified background startup, restrictive file permissions, loopback/tailnet-only listeners, and fresh CPU, RAM, and Apple GPU readings received by the Windows viewer machine. macOS Tailscale's bundled executable requires `TAILSCALE_BE_CLI=1` in the launchd environment; the installer now sets it explicitly.
 - Independent source review: three recovery/scheduling findings were fixed with regression tests. Review is not evidence of physical hardware testing.
 
 ## Local overhead
@@ -24,7 +25,7 @@ These are observed process working sets, not private allocations or fleet-wide g
 
 ## Remaining acceptance checks
 
-- Install/start/stop/uninstall services under their actual Windows, Linux, and macOS accounts.
+- Install/start/stop/uninstall services under actual Windows and Linux accounts; test Mac sign-out/sign-in and uninstallation. Mac installation and launchd job reload have been verified.
 - Verify Apple GPU counters on physical Apple silicon and each supported macOS version; private IOReport interfaces can change.
 - Exercise NVIDIA under sustained compute load, driver restart, sleep/wake, and multiple GPUs.
 - Exercise actual tailnet switching and interface disappearance on the deployed machines; automated tests cover response isolation and identity expiry.

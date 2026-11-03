@@ -13,7 +13,7 @@ cp "$agent" "$directory/tailwatch-agent"
 chmod 755 "$directory/tailwatch-agent"
 args=()
 for peer in "$@"; do args+=(--allow-peer "$peer"); done
-"$directory/tailwatch-agent" configure --output "$directory/agent.json" "${args[@]}"
+TAILSCALE_BE_CLI=1 "$directory/tailwatch-agent" configure --output "$directory/agent.json" "${args[@]}"
 chmod 600 "$directory/agent.json"
 /usr/bin/plutil -create xml1 "$plist"
 /usr/bin/plutil -insert Label -string com.tailwatch.agent "$plist"
@@ -22,6 +22,9 @@ chmod 600 "$directory/agent.json"
 /usr/bin/plutil -insert ProgramArguments.1 -string run "$plist"
 /usr/bin/plutil -insert ProgramArguments.2 -string --config "$plist"
 /usr/bin/plutil -insert ProgramArguments.3 -string "$directory/agent.json" "$plist"
+# The bundled Tailscale executable otherwise selects GUI mode under launchd.
+/usr/bin/plutil -insert EnvironmentVariables -dictionary "$plist"
+/usr/bin/plutil -insert EnvironmentVariables.TAILSCALE_BE_CLI -string 1 "$plist"
 /usr/bin/plutil -insert RunAtLoad -bool YES "$plist"
 /usr/bin/plutil -insert KeepAlive -bool YES "$plist"
 /usr/bin/plutil -insert ThrottleInterval -integer 10 "$plist"
