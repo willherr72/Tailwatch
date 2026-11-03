@@ -70,4 +70,40 @@ public class RecoveryTests
         await monitor.PollAsync();await monitor.PollAsync();Assert.Equal(1,requests);
         await monitor.PollAsync(true);Assert.Equal(2,requests);
     }
+    [Theory] [InlineData("tailscale_unavailable")] [InlineData("old_identity")] [InlineData("refused")]
+    public async Task LocalAgentRecoversOnNextTickAfterTailnetRoundTrip(string failure)
+    {
+        var clock=new Clock();string agentId="n1";bool failing=false;
+        using var client=new HttpClient(new MonitorTests.Handler((request,_)=>
+        {
+            Assert.Equal("127.0.0.1",request.RequestUri!.Host);
+            if(!failing)return Task.FromResult(MonitorTests.Reply(MonitorTests.Sample(agentId)));
+            return failure switch
+            {
+                "tailscale_unavailable"=>Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable){Content=new StringContent("tailscale_unavailable")}),
+                "old_identity"=>Task.FromResult(MonitorTests.Reply(MonitorTests.Sample("previous-node"))),
+                _=>Task.FromException<HttpResponseMessage>(new HttpRequestException("refused"))
+            };
+        }));
+        using var monitor=new TailwatchMonitor(client,new(),clock);
+        foreach(var (key,id) in new[]{("home","n1"),("work","n2"),("home","n1")})
+        {
+            var self=MonitorTests.Peer(id) with {IsSelf=true};
+            monitor.SetDirectory(new(key,key,self,[self]));agentId=id;failing=true;
+            await monitor.PollAsync();
+            Assert.Null(Assert.Single(monitor.Machines).Snapshot);
+            failing=false;clock.Ticks+=2000;
+            await monitor.PollAsync(); // Normal timer poll, without forcing Refresh.
+            var row=Assert.Single(monitor.Machines);Assert.Equal("Live",row.Status);Assert.Equal(id,row.Snapshot!.NodeId);
+        }
+    }
+    [Fact] public async Task LocalTailnetTransitionHasBoundedConnectingGrace()
+    {
+        var clock=new Clock();
+        using var client=new HttpClient(new MonitorTests.Handler((_,_)=>Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable){Content=new StringContent("tailscale_unavailable")})));
+        using var monitor=new TailwatchMonitor(client,new(),clock);
+        var self=MonitorTests.Peer() with {IsSelf=true};monitor.SetDirectory(new("home","home",self,[self]));
+        await monitor.PollAsync();Assert.Equal("Connecting",monitor.Machines[0].Status);
+        clock.Ticks+=11000;await monitor.PollAsync();Assert.Equal("Agent unavailable",monitor.Machines[0].Status);
+    }
 }

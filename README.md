@@ -35,7 +35,7 @@ Devices are discovered through Tailscale. Desktop/server peers are monitored by 
 
 A reachable Tailscale device without a usable Tailwatch endpoint displays **Agent unavailable**, with dashes for metrics. This can also mean the agent is stopped or a firewall blocks the port. It does not block other devices. Use **Machines** to disable devices you do not want to monitor.
 
-Other states include **Offline**, **Access denied**, **Connecting**, **Stale**, and **Incompatible agent version**. Unknown or unsupported metrics are never displayed as measured zero. Failed peers back off for 30 seconds; **Refresh** retries immediately.
+Other states include **Offline**, **Access denied**, **Connecting**, **Stale**, and **Incompatible agent version**. Unknown or unsupported metrics are never displayed as measured zero. Failed remote peers back off for 30 seconds; **Refresh** retries immediately. This computer's loopback agent is retried on the next normal update so brief tailnet-switch interruptions recover promptly. Its explicit Tailscale transition response gets up to ten seconds of **Connecting** before an unavailable status is shown.
 
 The agent's explicit startup response gets a ten-second grace period. Other failed responses, including unrelated services on the same port, back off normally.
 

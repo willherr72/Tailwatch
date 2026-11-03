@@ -133,8 +133,9 @@ public sealed class TailwatchMonitor : IDisposable
                 if(response.StatusCode==HttpStatusCode.ServiceUnavailable)
                 {
                     var body=await ReadBoundedAsync(response,64,budget.Token);
+                    var reason=System.Text.Encoding.UTF8.GetString(body);
                     bool warming=response.Content.Headers.ContentType?.MediaType=="text/plain" &&
-                        System.Text.Encoding.UTF8.GetString(body)=="warming_up";
+                        (reason=="warming_up" || (peer.IsSelf&&reason=="tailscale_unavailable"));
                     lock(sync)
                     {
                         if(!Current(peer,port,version,out var e))return;
@@ -191,7 +192,10 @@ public sealed class TailwatchMonitor : IDisposable
         {
             if(!Current(peer,port,version,out var e))return;
             e!.Status=e.Snapshot!=null?"Stale":status;
-            e.Backoff=backoff;e.Attempted=true;e.LastAttempt=clock.GetTimestamp();
+            // The loopback helper follows the local Tailscale identity on its own
+            // timer. During a switch it can briefly be unavailable or one identity
+            // behind discovery. Recheck it on the next tick, not 30 seconds later.
+            e.Backoff=backoff&&!e.Peer.IsSelf;e.Attempted=true;e.LastAttempt=clock.GetTimestamp();
         }
     }
     public void Dispose(){lock(sync){scope.Cancel();scope.Dispose();}}
