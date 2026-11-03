@@ -12,6 +12,31 @@ pub struct CachedSnapshot {
     pub captured: Instant,
 }
 pub type Cache = Arc<RwLock<Option<CachedSnapshot>>>;
+pub struct GpuSample {
+    pub readings: Vec<GpuReading>,
+    pub status: String,
+    pub captured: Instant,
+}
+pub type GpuCache = Arc<RwLock<Option<GpuSample>>>;
+pub fn cached_gpus(cache: &GpuCache) -> (Vec<GpuReading>, String) {
+    cache
+        .read()
+        .ok()
+        .and_then(|v| {
+            v.as_ref().map(|s| {
+                let mut readings = s.readings.clone();
+                let age = s.captured.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                for gpu in &mut readings {
+                    gpu.utilization.age_ms = gpu.utilization.age_ms.saturating_add(age);
+                    if let Some(memory) = &mut gpu.memory {
+                        memory.age_ms = memory.age_ms.saturating_add(age);
+                    }
+                }
+                (readings, s.status.clone())
+            })
+        })
+        .unwrap_or_else(|| (vec![], "warming_up".into()))
+}
 pub fn cached(cache: &Cache) -> Option<Snapshot> {
     cache.read().ok()?.as_ref().map(|entry| {
         entry
@@ -26,9 +51,7 @@ pub struct Collector {
     sequence: u64,
     node_id: String,
     #[cfg(any(target_os = "windows", target_os = "linux"))]
-    nvml: Option<nvml_wrapper::Nvml>,
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
-    last_nvml_attempt: Instant,
+    nvidia_gpu: GpuCache,
     #[cfg(target_os = "macos")]
     mac_gpu: Arc<RwLock<Option<(f64, Instant)>>>,
 }
@@ -43,9 +66,7 @@ impl Collector {
             sequence: 0,
             node_id,
             #[cfg(any(target_os = "windows", target_os = "linux"))]
-            nvml: nvml_wrapper::Nvml::init().ok(),
-            #[cfg(any(target_os = "windows", target_os = "linux"))]
-            last_nvml_attempt: Instant::now(),
+            nvidia_gpu: start_nvidia_gpu(),
             #[cfg(target_os = "macos")]
             mac_gpu: start_mac_gpu(),
         })
@@ -91,62 +112,7 @@ impl Collector {
     }
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     fn gpus(&mut self) -> (Vec<GpuReading>, String) {
-        if self.nvml.is_none() && self.last_nvml_attempt.elapsed() >= Duration::from_secs(30) {
-            self.nvml = nvml_wrapper::Nvml::init().ok();
-            self.last_nvml_attempt = Instant::now();
-        }
-        let Some(nvml) = &self.nvml else {
-            return (vec![], "unsupported_or_driver_missing".into());
-        };
-        let count = match nvml.device_count() {
-            Ok(n) => n,
-            Err(_) => return (vec![], "collection_failed".into()),
-        };
-        let mut gpus = vec![];
-        let mut partial = false;
-        for index in 0..count.min(64) {
-            let Ok(device) = nvml.device_by_index(index) else {
-                partial = true;
-                continue;
-            };
-            let Ok(id) = device.uuid() else {
-                partial = true;
-                continue;
-            };
-            let utilization = device
-                .utilization_rates()
-                .map(|u| Reading::measured(u.gpu as f64))
-                .unwrap_or_else(|_| Reading::unavailable("unsupported_or_collection_failed"));
-            let memory = device.memory_info().ok().map(|m| MemoryReading {
-                used_bytes: Some(m.used),
-                total_bytes: Some(m.total),
-                status: "ok".into(),
-                age_ms: 0,
-                source: "NVML dedicated memory".into(),
-            });
-            if !utilization.fresh() {
-                partial = true
-            }
-            gpus.push(GpuReading {
-                id,
-                name: device.name().unwrap_or_else(|_| "NVIDIA GPU".into()),
-                vendor: "NVIDIA".into(),
-                utilization,
-                metric: "active_time".into(),
-                memory,
-            });
-        }
-        (
-            gpus,
-            if partial {
-                "partial"
-            } else if count == 0 {
-                "unsupported"
-            } else {
-                "ok"
-            }
-            .into(),
-        )
+        cached_gpus(&self.nvidia_gpu)
     }
     #[cfg(target_os = "macos")]
     fn gpus(&mut self) -> (Vec<GpuReading>, String) {
@@ -235,4 +201,96 @@ pub fn start(cache: Cache, node_id: String) {
             std::thread::sleep(Duration::from_secs(2).saturating_sub(started.elapsed()));
         }
     });
+}
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+struct NvidiaCollector {
+    nvml: Option<nvml_wrapper::Nvml>,
+    last_nvml_attempt: Instant,
+}
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+impl NvidiaCollector {
+    fn gpus(&mut self) -> (Vec<GpuReading>, String) {
+        if self.nvml.is_none() && self.last_nvml_attempt.elapsed() >= Duration::from_secs(30) {
+            self.nvml = nvml_wrapper::Nvml::init().ok();
+            self.last_nvml_attempt = Instant::now();
+        }
+        let Some(nvml) = &self.nvml else {
+            return (vec![], "unsupported_or_driver_missing".into());
+        };
+        let count = match nvml.device_count() {
+            Ok(n) => n,
+            Err(_) => return (vec![], "collection_failed".into()),
+        };
+        let mut gpus = vec![];
+        let mut partial = false;
+        for index in 0..count.min(64) {
+            let Ok(device) = nvml.device_by_index(index) else {
+                partial = true;
+                continue;
+            };
+            let Ok(id) = device.uuid() else {
+                partial = true;
+                continue;
+            };
+            let utilization = device
+                .utilization_rates()
+                .map(|u| Reading::measured(u.gpu as f64))
+                .unwrap_or_else(|_| Reading::unavailable("unsupported_or_collection_failed"));
+            let memory = device.memory_info().ok().map(|m| MemoryReading {
+                used_bytes: Some(m.used),
+                total_bytes: Some(m.total),
+                status: "ok".into(),
+                age_ms: 0,
+                source: "NVML dedicated memory".into(),
+            });
+            if !utilization.fresh() {
+                partial = true
+            }
+            gpus.push(GpuReading {
+                id,
+                name: device.name().unwrap_or_else(|_| "NVIDIA GPU".into()),
+                vendor: "NVIDIA".into(),
+                utilization,
+                metric: "active_time".into(),
+                memory,
+            });
+        }
+        (
+            gpus,
+            if partial {
+                "partial"
+            } else if count == 0 {
+                "unsupported"
+            } else {
+                "ok"
+            }
+            .into(),
+        )
+    }
+}
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn start_nvidia_gpu() -> GpuCache {
+    let cache = Arc::new(RwLock::new(None));
+    let output = Arc::downgrade(&cache);
+    std::thread::spawn(move || {
+        let mut collector = NvidiaCollector {
+            nvml: nvml_wrapper::Nvml::init().ok(),
+            last_nvml_attempt: Instant::now(),
+        };
+        loop {
+            let started = Instant::now();
+            let (readings, status) = collector.gpus();
+            let Some(cache) = output.upgrade() else { break };
+            if let Ok(mut current) = cache.write() {
+                *current = Some(GpuSample {
+                    readings,
+                    status,
+                    captured: started,
+                });
+            }
+            drop(cache);
+            std::thread::sleep(Duration::from_secs(2).saturating_sub(started.elapsed()));
+        }
+    });
+    cache
 }

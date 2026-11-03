@@ -1,0 +1,66 @@
+name: Build and test
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  agent:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: windows-x64-agent
+          - os: ubuntu-22.04
+            artifact: linux-x64-agent
+          - os: macos-14
+            artifact: macos-arm64-agent
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        shell: bash
+        run: rustup show
+      - name: Format
+        run: cargo fmt --manifest-path agent/Cargo.toml -- --check
+      - name: Clippy
+        run: cargo clippy --manifest-path agent/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --manifest-path agent/Cargo.toml --locked
+      - name: Build
+        run: cargo build --manifest-path agent/Cargo.toml --release --locked
+      - name: Stage agent
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            cp agent/target/release/tailwatch-agent.exe dist/
+            cp scripts/install-windows.ps1 scripts/uninstall-windows.ps1 dist/
+          elif [[ "$RUNNER_OS" == "macOS" ]]; then
+            cp agent/target/release/tailwatch-agent dist/
+            cp scripts/install-macos.sh dist/
+          else
+            cp agent/target/release/tailwatch-agent dist/
+            cp scripts/install-linux.sh dist/
+          fi
+          cp README.md LICENSE dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/
+  viewer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet test tests/Tailwatch.Tests --nologo
+      - run: dotnet run --project tests/Tailwatch.UiSmoke
+      - run: dotnet publish viewer/Tailwatch.App -c Release -r win-x64 --self-contained true -o dist -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-viewer
+          path: dist/

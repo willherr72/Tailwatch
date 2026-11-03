@@ -1,0 +1,5 @@
+{
+  "node_id": "replace-with-this-machines-tailscale-node-id",
+  "port": 48173,
+  "allowed_peers": ["100.64.0.10"]
+}

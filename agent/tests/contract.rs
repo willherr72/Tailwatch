@@ -1,5 +1,23 @@
 use tailwatch_agent::model::{Reading, valid_percentage};
 #[test]
+fn stalled_gpu_worker_does_not_renew_old_readings() {
+    use std::{
+        sync::{Arc, RwLock},
+        time::{Duration, Instant},
+    };
+    use tailwatch_agent::collect::{GpuSample, cached_gpus};
+    let s: tailwatch_agent::model::Snapshot =
+        serde_json::from_str(include_str!("../../protocol/snapshot.example.json")).unwrap();
+    let cache = Arc::new(RwLock::new(Some(GpuSample {
+        readings: s.gpus,
+        status: "ok".into(),
+        captured: Instant::now() - Duration::from_secs(12),
+    })));
+    let (gpus, _) = cached_gpus(&cache);
+    assert!(!gpus[0].utilization.fresh());
+    assert!(gpus[0].memory.as_ref().unwrap().age_ms >= 12000);
+}
+#[test]
 fn snapshot_ages_when_sampler_stops() {
     let s: tailwatch_agent::model::Snapshot =
         serde_json::from_str(include_str!("../../protocol/snapshot.example.json")).unwrap();

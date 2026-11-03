@@ -39,7 +39,10 @@ public sealed class TailwatchMonitor : IDisposable
         bool Fresh(Reading r)=>r.IsFresh && r.AgeMs+elapsed<=10000;
         var gpus=live?s!.Gpus.Where(g=>Fresh(g.Utilization)).ToList():[];
         double? gpu=gpus.Select(g=>g.Utilization.Value).DefaultIfEmpty(null).Max();
-        return new(e.Peer,e.Monitored,status,s,e.LastSuccess,
+        long Aged(long age) => (long)Math.Min(long.MaxValue,age+elapsed);
+        var display=s==null?null:s with {AgeMs=Aged(s.AgeMs),Cpu=s.Cpu with {AgeMs=Aged(s.Cpu.AgeMs)},Ram=s.Ram with {AgeMs=Aged(s.Ram.AgeMs)},
+            Gpus=s.Gpus.Select(g=>g with {Utilization=g.Utilization with {AgeMs=Aged(g.Utilization.AgeMs)},Memory=g.Memory is null?null:g.Memory with {AgeMs=Aged(g.Memory.AgeMs)}}).ToList()};
+        return new(e.Peer,e.Monitored,status,display,e.LastSuccess,
             live&&Fresh(s!.Cpu)?s.Cpu.Value:null,gpu,
             live&&s!.Ram.AgeMs+elapsed<=10000?s.Ram.Percentage:null,
             gpu!=null&&(s!.GpuStatus=="partial"||gpus.Count!=s.Gpus.Count));
@@ -90,6 +93,7 @@ public sealed class TailwatchMonitor : IDisposable
         if(port is <1 or >65535)throw new ArgumentOutOfRangeException(nameof(port));
         lock(sync){settings.For(key).Ports[id]=port;if(entries.TryGetValue(id,out var e)){e.Backoff=false;e.Snapshot=null;e.Status="Connecting";}}
     }
+    public int GetPort(string id) {lock(sync)return settings.For(key).Ports.GetValueOrDefault(id,48173);}
     public async Task PollAsync(bool force=false,CancellationToken token=default)
     {
         if(!await round.WaitAsync(0,token))return;
@@ -173,4 +177,3 @@ public sealed class TailwatchMonitor : IDisposable
     }
     public void Dispose(){lock(sync){scope.Cancel();scope.Dispose();}}
 }
-

@@ -66,7 +66,7 @@ pub fn executable() -> PathBuf {
     #[cfg(windows)]
     {
         let base = std::env::var_os("ProgramFiles").unwrap_or_else(|| "C:\\Program Files".into());
-        return PathBuf::from(base).join("Tailscale").join("tailscale.exe");
+        PathBuf::from(base).join("Tailscale").join("tailscale.exe")
     }
     #[cfg(not(windows))]
     {

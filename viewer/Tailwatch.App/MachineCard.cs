@@ -1,0 +1,96 @@
+using Tailwatch.Core;
+namespace Tailwatch.App;
+internal sealed class Meter : Control
+{
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public double? Value {get;set;}
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public string Caption {get;set;}="";
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public bool Partial {get;set;}
+    public Meter(){DoubleBuffered=true;Height=40;TabStop=false;}
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        var number=Value is double v?$"{v:0}%{(Partial?"*":"")}":"—";
+        TextRenderer.DrawText(e.Graphics,Caption,Font,new Rectangle(0,0,Width/2,20),Theme.Muted,TextFormatFlags.Left);
+        TextRenderer.DrawText(e.Graphics,number,Font,new Rectangle(Width/2,0,Width/2,20),Value>=90?Theme.Hot:Theme.Text,TextFormatFlags.Right);
+        using var track=new SolidBrush(Theme.Border);using var fill=new SolidBrush(Theme.Load(Value));
+        e.Graphics.FillRectangle(track,0,27,Width,4);
+        if(Value.HasValue)e.Graphics.FillRectangle(fill,0,27,(float)(Width*Math.Clamp(Value.Value,0,100)/100),4);
+        AccessibleName=$"{Caption}: {(Value is null?"unavailable":number)}";
+    }
+}
+internal sealed class MachineCard : UserControl
+{
+    readonly Button title;
+    readonly Label status;
+    readonly Meter cpu=new(){Caption="CPU"},gpu=new(){Caption="GPU"},ram=new(){Caption="RAM"};
+    readonly Label detail;
+    readonly ToolTip tooltip=new();
+    MachineState state;
+    bool expanded;
+    public string MachineId=>state.Peer.Id;
+    public MachineCard(MachineState state)
+    {
+        this.state=state;DoubleBuffered=true;BackColor=Theme.Background;ForeColor=Theme.Text;
+        Margin=new Padding(0);Padding=new Padding(0,9,0,8);Height=88;
+        title=new Button{FlatStyle=FlatStyle.Flat,TextAlign=ContentAlignment.MiddleLeft,ForeColor=Theme.Text,BackColor=Theme.Background,
+            Font=new Font("Segoe UI",9.5f,FontStyle.Bold),Location=new Point(0,6),Height=27,Width=290,Cursor=Cursors.Hand,AutoEllipsis=true};
+        title.FlatAppearance.BorderSize=0;title.Click+=(_,_)=>{expanded=!expanded;UpdateDetails();};
+        status=new Label{TextAlign=ContentAlignment.MiddleRight,ForeColor=Theme.Muted,Location=new Point(290,12),Size=new Size(160,18),AutoEllipsis=true};
+        var meters=new TableLayoutPanel{ColumnCount=3,RowCount=1,Location=new Point(4,43),Height=40,Anchor=AnchorStyles.Left|AnchorStyles.Top|AnchorStyles.Right};
+        for(int i=0;i<3;i++)meters.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,33.333f));
+        foreach(var meter in new[]{cpu,gpu,ram}){meter.Dock=DockStyle.Fill;meter.Margin=new Padding(0,0,16,0);meters.Controls.Add(meter);}
+        detail=new Label{ForeColor=Theme.Muted,BackColor=Theme.Card,Padding=new Padding(10),Location=new Point(4,91),AutoSize=false,Visible=false};
+        Controls.AddRange([title,status,meters,detail]);
+        Resize+=(_,_)=>{title.Width=Math.Max(90,Width-150);status.Left=Width-150;status.Width=140;meters.Width=Width-8;detail.Width=Width-8;};
+        UpdateState(state);
+    }
+    public void UpdateState(MachineState value)
+    {
+        state=value;
+        title.AccessibleName=$"{value.Peer.Name}. Expand machine details";
+        status.Text=value.Status=="Live"?value.Peer.Os:value.Status;tooltip.SetToolTip(status,status.Text);
+        cpu.Value=value.Cpu;gpu.Value=value.Gpu;gpu.Partial=value.PartialGpu;ram.Value=value.Ram;
+        foreach(var meter in new[]{cpu,gpu,ram})meter.Invalidate();
+        UpdateDetails();
+    }
+    public static string Memory(MemoryReading? m)=>m?.UsedBytes is ulong used && m.TotalBytes is ulong total && m.Status=="ok" && m.AgeMs<=10000
+        ?$"{used/1073741824.0:0.0} / {total/1073741824.0:0.#} GiB":"Unavailable";
+    void UpdateDetails()
+    {
+        title.Text=$"{(expanded?"▾":"▸")}  {state.Peer.Name}{(state.Peer.IsSelf?"  · this PC":"")}";
+        detail.Visible=expanded;if(!expanded){Height=88;return;}
+        var s=state.Snapshot;
+        var lines=new List<string>{state.Peer.Os+"  ·  "+string.Join(", ",state.Peer.Addresses)};
+        if(s!=null && state.Status=="Live")
+        {
+            lines.Add($"{s.Cpu.Model}  ·  {s.Cpu.LogicalCores} logical CPUs");lines.Add("RAM  "+Memory(s.Ram));
+            if(s.Gpus.Count==0)lines.Add("GPU monitoring unavailable: "+s.GpuStatus.Replace('_',' '));
+            foreach(var g in s.Gpus)
+            {
+                lines.Add($"{g.Name}  ·  {(g.Utilization.IsFresh?$"{g.Utilization.Value:0}% active":"Unavailable")}");
+                if(g.Memory!=null)lines.Add("Video memory  "+Memory(g.Memory));
+                else if(g.Vendor=="Apple")lines.Add("GPU uses shared unified memory.");
+            }
+            if(s.Gpus.Count>1)lines.Add("Summary shows the busiest GPU"+(state.PartialGpu?" (partial readings).":"."));
+        }
+        else
+        {
+            lines.Add(state.Status switch {
+                "Agent unavailable"=>"Install and start the Tailwatch agent on this machine.",
+                "Access denied"=>"Add this viewer's Tailscale address to the agent's allowed peers.",
+                "Not monitored"=>"Enable this machine in Machines to collect readings.",
+                "Connecting"=>"Waiting for a fresh agent sample.",
+                "Offline"=>"This device is offline in Tailscale.",
+                _=>"No fresh readings. Check the agent and Tailscale connection."});
+        }
+        if(state.LastSuccess.HasValue)lines.Add($"Last reading  {state.LastSuccess.Value.ToLocalTime():HH:mm:ss}");
+        detail.Text=string.Join(Environment.NewLine,lines);
+        detail.Height=Math.Max(70,TextRenderer.MeasureText(detail.Text,Font,new Size(Math.Max(180,Width-28),1000),TextFormatFlags.WordBreak).Height+24);
+        Height=detail.Bottom+12;
+    }
+    protected override void OnPaint(PaintEventArgs e){base.OnPaint(e);using var pen=new Pen(Theme.Border);e.Graphics.DrawLine(pen,0,0,Width,0);}
+    protected override void Dispose(bool disposing){if(disposing){tooltip.Dispose();title.Font.Dispose();}base.Dispose(disposing);}
+}

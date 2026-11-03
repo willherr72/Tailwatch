@@ -2,7 +2,7 @@
 
 Tailwatch gives William a quick view of how busy his Windows, Linux, and Apple silicon machines are. A Windows system tray icon opens the approved compact panel, showing CPU, GPU, and RAM utilization without opening a browser or connecting to each machine manually.
 
-Status: proposed implementation design. The tray mockup and dedicated agent approach have been accepted; the implementation choices below are proposed defaults.
+Status: approved for implementation on 2026-11-03. The user approved the design, requested the project under Desktop/code, and authorized a public Git repository.
 
 ## Agreed requirements
 
@@ -29,14 +29,14 @@ Misleading zeros, stale readings presented as live, exposed LAN listeners, and h
 
 ## Proposed implementation choices
 
-These are the assistant's recommendations, not language preferences expressed by the user:
+These were the assistant's implementation recommendations, approved with the design:
 
 - A C# Windows Forms viewer on a supported .NET LTS release, using NotifyIcon for the tray and a custom compact panel. Package it self-contained so the user does not need a separate .NET runtime.
 - A Rust agent shared across platforms, with platform-gated collectors. Use sysinfo for host CPU and memory, nvml-wrapper for NVIDIA, and the macmon library for Apple silicon GPU activity. Avoid subprocess launches on each sample.
 - A versioned, bounded HTTP JSON response over the existing encrypted Tailscale connection. No database or central service.
 - One source workspace containing viewer, agent, protocol fixtures, packaging scripts, and documentation. Pin dependencies and choose supported versions during implementation.
 
-The current workspace contains only the mockup and is not a Git repository. Tailscale is installed; .NET and Rust tools were not found on PATH. Implementation must verify installed SDK locations and prepare the required toolchains before building. Native macOS builds and hardware verification require a Mac; Linux and Windows agents also need their own platform checks.
+The project now has its own Git repository. Native macOS builds and hardware verification require a Mac; Linux and Windows agents also need their own platform checks.
 
 ## Viewer behavior
 
@@ -71,6 +71,8 @@ Connection states:
 On a failed request, immediately stop presenting old figures as live. A last-successful timestamp may remain, but old meters are muted and marked stale. Unsupported collectors remain distinguishable from disconnected machines. Back off unavailable peers to at most one probe per thirty seconds; opening the panel permits one immediate retry.
 
 ## Discovery and initial configuration
+
+Implementation refinement: follow only the currently active Tailscale identity. Scope preferences by the tailnet DNS suffix and local node ID. On an identity change, discard old readings, cancel requests, and ignore late responses. The ordinary Tailscale client does not connect to several accounts simultaneously. Refresh status each polling round to detect switches promptly. Monitor visible desktop/server peers by default, with opt-out in Machines; a missing agent displays Agent unavailable. These defaults reduce setup while preserving explicit per-device controls.
 
 Use the installed Tailscale CLI's JSON status, with a bounded process timeout, to discover the local node and visible peers. Refresh the directory every sixty seconds. Parse only the needed fields, tolerate unknown fields, and keep the last good directory on a transient CLI failure. Never log the full status payload.
 
@@ -114,6 +116,8 @@ Retain an internal GPU collector interface so AMD can be added later. First-vers
 
 ## Packaging and operation
 
+The viewer starts a loopback-only child agent when no local service is already listening. It stops its own child on exit and never stops a separately installed service. This makes the viewer machine work immediately without an elevated installation.
+
 Produce Windows x64 viewer and agent artifacts, Linux x64 agent artifacts, and macOS arm64 agent artifacts. Other CPU architectures are follow-up work.
 
 Windows agent: Windows service, with documented install, start, stop, and uninstall commands. Linux agent: systemd service under a dedicated unprivileged user. macOS agent: per-user launchd agent starting on login for the first version, with uninstall instructions; pre-login monitoring is out of scope. Installation may need elevation, but routine collection should not require an administrator session.
@@ -152,4 +156,3 @@ Choose exact supported dependency versions, native rendering details, platform p
 - [macmon sampling library](https://docs.rs/macmon/latest/macmon/)
 - [macmon platform limitations](https://github.com/vladkens/macmon)
 - [Tailscale CLI](https://tailscale.com/docs/reference/tailscale-cli)
-
