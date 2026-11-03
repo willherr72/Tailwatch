@@ -7,7 +7,24 @@ internal static class Theme
         Accent=Color.FromArgb(36,194,169),Warning=Color.FromArgb(240,179,63),Hot=Color.FromArgb(255,95,112);
     public static Color Load(double? value)=>value>=90?Hot:value>=75?Warning:Accent;
     public static ContextMenuStrip Menu()=>new(){BackColor=Card,ForeColor=Text,ShowImageMargin=false,ShowCheckMargin=true,
-        Renderer=new ToolStripProfessionalRenderer(new MenuColors()){RoundedEdges=false}};
+        Renderer=new MenuRenderer()};
+    sealed class MenuRenderer : ToolStripProfessionalRenderer
+    {
+        public MenuRenderer():base(new MenuColors()){RoundedEdges=false;}
+        protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
+        {
+            var state=e.Graphics.Save();
+            e.Graphics.SmoothingMode=System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            var box=e.ImageRectangle;
+            float size=Math.Min(box.Width,box.Height)*0.64f;
+            float x=box.Left+(box.Width-size)/2f,y=box.Top+(box.Height-size)/2f;
+            using var pen=new Pen(Accent,Math.Max(1.5f,(e.ToolStrip?.DeviceDpi??96)/96f*1.6f)){
+                StartCap=System.Drawing.Drawing2D.LineCap.Round,EndCap=System.Drawing.Drawing2D.LineCap.Round,
+                LineJoin=System.Drawing.Drawing2D.LineJoin.Round};
+            e.Graphics.DrawLines(pen,[new PointF(x,y+size*0.5f),new PointF(x+size*0.35f,y+size*0.85f),new PointF(x+size,y+size*0.12f)]);
+            e.Graphics.Restore(state);
+        }
+    }
     sealed class MenuColors : ProfessionalColorTable
     {
         public override Color ToolStripDropDownBackground=>Card;
@@ -37,5 +54,27 @@ internal static class Theme
         var handle=bitmap.GetHicon();
         try{using var temporary=System.Drawing.Icon.FromHandle(handle);return (Icon)temporary.Clone();}
         finally{DestroyIcon(handle);}
+    }
+}
+internal sealed class PanelCloseButton : Button
+{
+    public PanelCloseButton()
+    {
+        AccessibleName="Close panel";AccessibleRole=AccessibleRole.PushButton;
+        AutoSize=false;FlatStyle=FlatStyle.Flat;FlatAppearance.BorderSize=0;
+        FlatAppearance.MouseOverBackColor=Theme.Card;FlatAppearance.MouseDownBackColor=Theme.Border;
+        BackColor=Theme.Background;ForeColor=Theme.Muted;Cursor=Cursors.Hand;Padding=Padding.Empty;
+        SetStyle(ControlStyles.OptimizedDoubleBuffer|ControlStyles.ResizeRedraw,true);
+    }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        var state=e.Graphics.Save();e.Graphics.SmoothingMode=System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        float half=5f*DeviceDpi/96f,cx=(ClientSize.Width-1)/2f,cy=(ClientSize.Height-1)/2f;
+        using var pen=new Pen(Focused||ClientRectangle.Contains(PointToClient(Cursor.Position))?Theme.Text:ForeColor,1.6f*DeviceDpi/96f){
+            StartCap=System.Drawing.Drawing2D.LineCap.Round,EndCap=System.Drawing.Drawing2D.LineCap.Round};
+        e.Graphics.DrawLine(pen,cx-half,cy-half,cx+half,cy+half);
+        e.Graphics.DrawLine(pen,cx+half,cy-half,cx-half,cy+half);
+        e.Graphics.Restore(state);
     }
 }

@@ -6,7 +6,8 @@ internal sealed class TrayPanel : Form
     readonly TextBox search=new();
     readonly Button sort=Theme.Button("Sort: Name  ▾",(_,_)=>{});
     readonly ContextMenuStrip sortMenu=Theme.Menu();
-    readonly FlowLayoutPanel list=new();
+    readonly FlowLayoutPanel list=new BufferedMachineList();
+    readonly Label emptyState=new(){ForeColor=Theme.Muted,AutoSize=false,Size=new Size(440,80),Padding=new Padding(6,20,0,0),Visible=false};
     readonly Panel offline=new();
     readonly Button settings,refresh;
     string sortValue="Name";
@@ -24,7 +25,7 @@ internal sealed class TrayPanel : Form
         AutoScaleDimensions=new SizeF(96,96);AutoScaleMode=AutoScaleMode.Dpi;ClientSize=new Size(520,560);
         var heading=new Label{Text="Tailwatch",Font=new Font("Segoe UI",16f,FontStyle.Bold),Location=new Point(18,14),AutoSize=true};
         subtitle.SetBounds(20,48,450,20);subtitle.ForeColor=Theme.Muted;subtitle.AutoEllipsis=true;
-        var close=Theme.Button("×",(_,_)=>Hide());close.SetBounds(467,15,32,30);
+        var close=new PanelCloseButton();close.Click+=(_,_)=>Hide();close.SetBounds(467,15,32,32);
         search.PlaceholderText="Find a machine…";search.AccessibleName="Find a machine";search.SetBounds(20,81,320,28);
         search.BackColor=Theme.Card;search.ForeColor=Theme.Text;search.BorderStyle=BorderStyle.FixedSingle;
         sort.SetBounds(350,79,150,32);sort.AutoSize=false;sort.AccessibleName="Sort machines";sort.TextAlign=ContentAlignment.MiddleLeft;
@@ -40,6 +41,7 @@ internal sealed class TrayPanel : Form
         summary.SetBounds(20,121,480,22);summary.ForeColor=Theme.Muted;summary.AutoEllipsis=true;
         list.SetBounds(16,150,488,340);list.FlowDirection=FlowDirection.TopDown;list.WrapContents=false;list.AutoScroll=true;
         list.Anchor=AnchorStyles.Top|AnchorStyles.Left|AnchorStyles.Right|AnchorStyles.Bottom;
+        list.Controls.Add(emptyState);
         offline.SetBounds(20,150,480,340);offline.Anchor=list.Anchor;offline.Visible=false;
         var offlineTitle=new Label{Text="Connect to your machines",Font=new Font("Segoe UI",13f,FontStyle.Bold),TextAlign=ContentAlignment.MiddleCenter,Bounds=new Rectangle(10,65,460,34),Anchor=AnchorStyles.Top|AnchorStyles.Left|AnchorStyles.Right};
         var offlineHelp=new Label{Text="Open Tailscale and connect to your tailnet.\nYour machines will appear here automatically.",ForeColor=Theme.Muted,TextAlign=ContentAlignment.MiddleCenter,Bounds=new Rectangle(10,110,460,58),Anchor=AnchorStyles.Top|AnchorStyles.Left|AnchorStyles.Right};
@@ -80,18 +82,30 @@ internal sealed class TrayPanel : Form
         var shown=machines.Where(m=>(m.Peer.Name+" "+m.Peer.Os+" "+string.Join(" ",m.Snapshot?.Gpus.Select(g=>g.Name)??[])).Contains(query,StringComparison.OrdinalIgnoreCase));
         double? Load(MachineState m)=>SortValue switch{"CPU"=>m.Cpu,"GPU"=>m.Gpu,"RAM"=>m.Ram,_=>null};
         shown=SortValue=="Name"?shown.OrderByDescending(m=>m.Peer.Online).ThenBy(m=>m.Peer.Name):shown.OrderByDescending(m=>Load(m).HasValue).ThenByDescending(Load).ThenBy(m=>m.Peer.Name);
-        var rows=shown.ToList();var scroll=list.AutoScrollPosition;list.SuspendLayout();
-        foreach(var obsolete in cards.Keys.Where(id=>!machines.Any(m=>m.Peer.Id==id)).ToArray()){cards[obsolete].Dispose();cards.Remove(obsolete);}
-        foreach(var label in list.Controls.OfType<Label>().ToArray())label.Dispose();
-        foreach(var card in cards.Values)card.Visible=false;
-        int index=0;
-        foreach(var row in rows)
+        var rows=shown.ToList();var scroll=list.AutoScrollPosition;
+        var present=machines.Select(m=>m.Peer.Id).ToHashSet();
+        var visible=rows.Select(m=>m.Peer.Id).ToHashSet();
+        list.SuspendLayout();
+        try
         {
-            if(!cards.TryGetValue(row.Peer.Id,out var card)){card=new MachineCard(row);cards[row.Peer.Id]=card;list.Controls.Add(card);}
-            card.Width=list.ClientSize.Width-SystemInformation.VerticalScrollBarWidth-4;card.UpdateState(row);card.Visible=true;list.Controls.SetChildIndex(card,index++);
+            foreach(var obsolete in cards.Keys.Where(id=>!present.Contains(id)).ToArray()){cards[obsolete].Dispose();cards.Remove(obsolete);}
+            // Only hide rows removed by the filter. Refreshing a reading must never
+            // hide its existing control, which briefly erased the entire fleet.
+            foreach(var pair in cards)if(!visible.Contains(pair.Key))pair.Value.Visible=false;
+            int index=0;
+            foreach(var row in rows)
+            {
+                if(!cards.TryGetValue(row.Peer.Id,out var card)){card=new MachineCard(row);cards[row.Peer.Id]=card;list.Controls.Add(card);}
+                card.Width=list.ClientSize.Width-SystemInformation.VerticalScrollBarWidth-4;
+                card.UpdateState(row);card.Visible=true;
+                if(list.Controls.GetChildIndex(card)!=index)list.Controls.SetChildIndex(card,index);
+                index++;
+            }
+            emptyState.Text=machines.Count==0?"No machines yet. Connect Tailscale to get started.":"No matching machines.";
+            emptyState.Visible=rows.Count==0;
         }
-        if(rows.Count==0)list.Controls.Add(new Label{Text=machines.Count==0?"No machines yet. Connect Tailscale to get started.":"No matching machines.",ForeColor=Theme.Muted,AutoSize=false,Size=new Size(440,80),Padding=new Padding(6,20,0,0)});
-        list.ResumeLayout();list.AutoScrollPosition=new Point(-scroll.X,-scroll.Y);
+        finally{list.ResumeLayout(true);}
+        if(list.AutoScrollPosition!=scroll)list.AutoScrollPosition=new Point(-scroll.X,-scroll.Y);
     }
     public void ShowNearTray()
     {
@@ -101,4 +115,8 @@ internal sealed class TrayPanel : Form
     }
     protected override void OnPaint(PaintEventArgs e){base.OnPaint(e);using var pen=new Pen(Theme.Border);e.Graphics.DrawRectangle(pen,0,0,ClientSize.Width-1,ClientSize.Height-1);}
     protected override void Dispose(bool disposing){if(disposing)sortMenu.Dispose();base.Dispose(disposing);}
+}
+internal sealed class BufferedMachineList : FlowLayoutPanel
+{
+    public BufferedMachineList(){DoubleBuffered=true;ResizeRedraw=true;}
 }

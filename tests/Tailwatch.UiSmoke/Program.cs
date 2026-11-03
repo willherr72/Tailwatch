@@ -30,6 +30,7 @@ internal static class Program
         if(list.Controls.OfType<MachineCard>().Count(c=>c.Visible)!=1)throw new Exception("Search filter failed");
         search.Text="";panel.SetSort("GPU");Application.DoEvents();
         if(((MachineCard)list.Controls[0]).MachineId!="a")throw new Exception("GPU sort failed");
+        CheckStableRefresh(panel,rows);
         if(args.Length>0)Capture(panel,args[0],args.Contains("--capture-screen"));
         panel.UpdateMachines("Tailscale disconnected",[],"Connect Tailscale to see your machines.");Application.DoEvents();
         var launch=Find(panel).OfType<Button>().SingleOrDefault(b=>b.Text=="Open Tailscale" && b.Visible);
@@ -54,10 +55,43 @@ internal static class Program
             if(title.Height<title.GetPreferredSize(Size.Empty).Height)throw new Exception("Machine heading clips at display DPI");
         }
         if(args.Length>0)Capture(panel,Path.ChangeExtension(args[0],"connected.png"),false);
-        panel.Hide();
-        Console.WriteLine("Native UI smoke passed: rows, details, search, sort, DPI heading, disconnected action, recovery.");
+        var close=Find(panel).OfType<Button>().Single(b=>b.AccessibleName=="Close panel");
+        close.PerformClick();if(panel.Visible)throw new Exception("Close button did not dismiss the panel");
+        if(args.Length>0)
+        {
+            sortMenu.Show(new Point(-2000,-2000));Application.DoEvents();
+            using var menuImage=new Bitmap(sortMenu.Width,sortMenu.Height);sortMenu.DrawToBitmap(menuImage,sortMenu.ClientRectangle);
+            menuImage.Save(Path.ChangeExtension(args[0],"menu.png"));sortMenu.Close();
+        }
+        Console.WriteLine("Native UI smoke passed: steady 43-machine refresh, scroll/details, search, sort, DPI, offline recovery, close action.");
     }
     static IEnumerable<Control> Find(Control parent)=>parent.Controls.Cast<Control>().SelectMany(c=>new[]{c}.Concat(Find(c)));
+    static void CheckStableRefresh(TrayPanel panel,List<MachineState> original)
+    {
+        var fleet=original.Concat(Enumerable.Range(1,39).Select(i=>original[0] with {Peer=original[0].Peer with {Id="extra-"+i,Name=$"Worker {i:00}"}})).ToList();
+        var list=panel.Controls.OfType<FlowLayoutPanel>().Single();
+        var sort=panel.SortValue;panel.SetSort("Name");panel.UpdateMachines("Sample tailnet",fleet,null);Application.DoEvents();
+        var existing=list.Controls.OfType<MachineCard>().ToDictionary(c=>c.MachineId);
+        var expanded=existing["a"];expanded.Controls.OfType<Button>().Single().PerformClick();Application.DoEvents();
+        var expandedHeight=expanded.Height;
+        list.AutoScrollPosition=new Point(0,120);var scroll=list.AutoScrollPosition;
+        int hidden=0;
+        EventHandler changed=(sender,_)=>{if(sender is MachineCard {Visible:false})hidden++;};
+        foreach(var row in existing.Values)row.VisibleChanged+=changed;
+        try
+        {
+            for(int tick=0;tick<4;tick++)
+            {
+                panel.UpdateMachines("Sample tailnet",fleet.Select(r=>r with {Cpu=25+tick}).ToList(),null);Application.DoEvents();
+                if(hidden!=0)throw new Exception("Refresh temporarily hid existing machine rows");
+                if(expanded.Height!=expandedHeight)throw new Exception("Refresh collapsed expanded details");
+                if(list.AutoScrollPosition!=scroll)throw new Exception("Refresh moved the scroll position");
+                if(list.Controls.OfType<MachineCard>().Any(c=>!ReferenceEquals(c,existing[c.MachineId])))throw new Exception("Refresh recreated rows");
+            }
+        }
+        finally{foreach(var row in existing.Values)row.VisibleChanged-=changed;}
+        panel.UpdateMachines("Sample tailnet",original,null);panel.SetSort(sort);expanded.Controls.OfType<Button>().Single().PerformClick();list.AutoScrollPosition=Point.Empty;
+    }
     static void Capture(Form panel,string path,bool screen)
     {
         panel.Refresh();Application.DoEvents();
