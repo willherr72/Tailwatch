@@ -22,7 +22,7 @@ internal sealed class TrayContext : ApplicationContext
     public TrayContext(EventWaitHandle show)
     {
         this.show=show;settings=AppSettings.Load(settingsPath);monitor=new(http,settings);drawing=Theme.Icon();
-        var menu=new ContextMenuStrip();
+        var menu=Theme.Menu();
         menu.Items.Add("Open",null,(_,_)=>Toggle(true));menu.Items.Add("Machines…",null,(_,_)=>OpenSettings());
         var startup=new ToolStripMenuItem("Start with Windows"){Checked=StartupEnabled(),CheckOnClick=true};
         startup.Click+=(_,_)=>{try{SetStartup(startup.Checked);}catch(Exception e){Log.Write(e.Message);startup.Checked=StartupEnabled();}};
@@ -31,6 +31,7 @@ internal sealed class TrayContext : ApplicationContext
         icon.MouseClick+=(_,e)=>{if(e.Button==MouseButtons.Left)Toggle(!panel.Visible);};
         panel.RefreshRequested+=()=>{next=DateTime.MinValue;_=RefreshAsync(true);};
         panel.SettingsRequested+=OpenSettings;
+        panel.OpenTailscaleRequested+=OpenTailscale;
         panel.SortChanged+=()=>{if(monitor.NetworkKey.Length>0){settings.For(monitor.NetworkKey).Sort=panel.SortValue;Save();}};
         timer.Tick+=async(_,_)=>{
             if(ending)return;
@@ -50,6 +51,18 @@ internal sealed class TrayContext : ApplicationContext
     {
         panel.Hide();using var dialog=new SettingsForm(monitor,Save);dialog.ShowDialog();
         next=DateTime.MinValue;_=RefreshAsync(true);
+    }
+    void OpenTailscale()
+    {
+        var path=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"Tailscale","tailscale-ipn.exe");
+        try
+        {
+            if(!File.Exists(path))throw new FileNotFoundException("Install Tailscale for Windows to connect your machines.");
+            using var process=Process.Start(new ProcessStartInfo(path){UseShellExecute=true});
+            panel.Hide();next=DateTime.MinValue;
+        }
+        catch(Exception e)when(e is IOException or System.ComponentModel.Win32Exception)
+        {MessageBox.Show(panel,e.Message,"Could not open Tailscale",MessageBoxButtons.OK,MessageBoxIcon.Information);}
     }
     void UpdatePanel()
     {

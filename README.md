@@ -15,6 +15,8 @@ The viewer starts a local-only agent automatically if no agent is listening on p
 
 Settings and a bounded diagnostic log live in `%LOCALAPPDATA%\Tailwatch`. Machine selections, ports, and sort preference are kept separately for each Tailscale identity. The app runs without administrator access.
 
+When Tailscale is disconnected, use **Open Tailscale** to launch its Windows app, connect there, and return to Tailwatch. Discovery resumes automatically; **Retry** checks immediately. The disconnected panel hides machine controls until a network is available.
+
 ## Multiple tailnets
 
 Tailwatch follows the **currently active account** in the installed Tailscale client. Switching accounts in Tailscale clears old readings and starts monitoring the newly visible machines. In-flight responses from the old network are discarded. Saved preferences return when you switch back.
