@@ -15,11 +15,13 @@ jobs:
             artifact: windows-x64-agent
           - os: ubuntu-22.04
             artifact: linux-x64-agent
-          - os: macos-14
+          - os: macos-15
             artifact: macos-arm64-agent
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install Rust toolchain
         shell: bash
         run: rustup show
@@ -46,21 +48,121 @@ jobs:
             cp scripts/install-linux.sh dist/
           fi
           cp README.md LICENSE dist/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact }}
           path: dist/
+          if-no-files-found: error
   viewer:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: 10.0.x
       - run: dotnet test tests/Tailwatch.Tests --nologo
       - run: dotnet run --project tests/Tailwatch.UiSmoke
       - run: dotnet publish viewer/Tailwatch.App -c Release -r win-x64 --self-contained true -o dist -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-x64-viewer
           path: dist/
+          if-no-files-found: error
+  package:
+    needs: [agent, viewer]
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: artifacts
+      - name: Test package validation
+        shell: pwsh
+        run: ./tests/package-release.tests.ps1
+      - name: Test draft release validation
+        run: node --test tests/package-workflow.tests.cjs
+      - name: Read release version
+        id: version
+        shell: pwsh
+        run: |
+          $manifest = Get-Content agent/Cargo.toml -Raw
+          $version = [regex]::Match($manifest, '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Package and verify archives
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: ./scripts/package-release.ps1 -ArtifactRoot artifacts -OutputDirectory bundles -Version $env:RELEASE_VERSION
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-bundles
+          path: bundles/
+          if-no-files-found: error
+  package-smoke:
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x64
+          - os: ubuntu-22.04
+            platform: linux-x64
+          - os: macos-15
+            platform: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: runner.os == 'Windows'
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        if: runner.os == 'Windows'
+        with:
+          dotnet-version: 10.0.x
+      - name: Build controlled Tailscale CLI fixture
+        if: runner.os == 'Windows'
+        run: dotnet build tests/Tailwatch.UiSmoke -c Release -o fixture --nologo
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-bundles
+          path: bundles
+      - name: Check packaged agent version and installer syntax
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.package.outputs.version }}
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = "Tailwatch-v$env:RELEASE_VERSION-$env:RELEASE_PLATFORM.zip"
+          $line = @(Get-Content bundles/SHA256SUMS.txt | Where-Object { $_.EndsWith("  $archive", [StringComparison]::Ordinal) })
+          if ($line.Count -ne 1 -or (Get-FileHash "bundles/$archive").Hash -ne $line[0].Split(' ')[0]) { throw 'Package checksum mismatch' }
+          Expand-Archive -LiteralPath "bundles/$archive" -DestinationPath unpacked
+          if ($IsWindows) {
+            $agent = './unpacked/tailwatch-agent.exe'
+            foreach ($installer in Get-ChildItem unpacked/*.ps1) {
+              $tokens = $null; $parseErrors = $null
+              [void][Management.Automation.Language.Parser]::ParseFile($installer.FullName, [ref]$tokens, [ref]$parseErrors)
+              if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+            }
+          } else {
+            $agent = './unpacked/tailwatch-agent'
+            chmod +x $agent
+            if ($LASTEXITCODE) { throw 'chmod failed' }
+            foreach ($installer in Get-ChildItem unpacked/*.sh) {
+              bash -n $installer.FullName
+              if ($LASTEXITCODE) { throw "Installer syntax failed: $installer" }
+            }
+          }
+          $actual = & $agent --version
+          if ($LASTEXITCODE -ne 0 -or $actual.Trim() -cne "tailwatch-agent $env:RELEASE_VERSION") { throw "Packaged agent version failed: $actual" }
+      - name: Cold-start the packaged Windows viewer with a synthetic local identity
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/package-viewer-smoke.ps1 -PackageDirectory unpacked -TailscaleFixturePath fixture/Tailwatch.UiSmoke.exe

@@ -1,5 +1,14 @@
 # Initial prototype validation — 2026-11-03
 
+## v0.2 setup, history, and distribution checks
+
+- Viewer core: 62 tests passed, including monotonic history retention and point bounds, duplicate suppression, missing metrics, restart and short-discovery gaps, network isolation, platform-specific install/update commands, rejected addresses, and custom-port guidance.
+- Native UI smoke passed for the setup dialog's platform selection, DPI layout, update mode, disabled stale commands, fresh active-account validation immediately before copying, and expanded history graphs. Existing filter, account-switch, Unicode, scroll/refresh and offline checks remain included.
+- Package validation: 17 tests passed for exact contents, archive round-trip hashes and executable modes, each binary architecture, missing/extra files, existing output directories, and invalid/mismatched versions.
+- Draft-workflow boundaries: 20 tests passed for source repository/run/version checks, expired/duplicate artifacts, refusing existing tags/releases, altered bundles and draft-only uploads. These execute the workflow's JavaScript with controlled GitHub responses; they do not publish a release.
+- Rust's 13 tests and the local Windows release builds passed. A fresh independent review found stale setup addresses, missing short-discovery history gaps, and a retired macOS runner image; those were addressed with regression checks and the move to macos-15.
+- The new hosted package and cold-start jobs still require their first successful GitHub Actions run. Signing is not configured; physical sleep/reboot testing remains as documented below.
+
 ## Executed checks
 
 - Rust: 13 contract, collection freshness, address policy, identity lease, and HTTP authorization tests; formatting and Clippy with warnings denied.

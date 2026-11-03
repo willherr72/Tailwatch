@@ -1,0 +1,149 @@
+name: Create draft prerelease
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful Build and test workflow run ID from this repository
+        required: true
+        type: string
+      version:
+        description: Source manifest version, without v (must be an unused release tag)
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: draft-release-${{ inputs.version }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.source.outputs.version }}
+    steps:
+      - name: Validate source build and manifest versions
+        id: source
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          SOURCE_RUN_ID: ${{ inputs.run_id }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        with:
+          script: |
+            const version = process.env.RELEASE_VERSION;
+            const semver = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+            if (!semver.test(version)) throw new Error('Invalid semantic version (omit v)');
+            if (!/^[1-9][0-9]*$/.test(process.env.SOURCE_RUN_ID)) throw new Error('Invalid run ID');
+            const runId = Number(process.env.SOURCE_RUN_ID);
+            if (!Number.isSafeInteger(runId)) throw new Error('Run ID exceeds safe integer range');
+            const repo = context.repo;
+            const {data: run} = await github.rest.actions.getWorkflowRun({...repo, run_id: runId});
+            const fullName = `${repo.owner}/${repo.repo}`.toLowerCase();
+            if (run.repository.full_name.toLowerCase() !== fullName || run.head_repository?.full_name.toLowerCase() !== fullName)
+              throw new Error('Source run must belong to this repository');
+            if (run.status !== 'completed' || run.conclusion !== 'success') throw new Error('Source run must have completed successfully');
+            if (!['push', 'workflow_dispatch'].includes(run.event)) throw new Error('Pull request and external workflow runs cannot be released');
+            const {data: workflow} = await github.rest.actions.getWorkflow({...repo, workflow_id: run.workflow_id});
+            if (workflow.path !== '.github/workflows/build.yml' || run.path !== '.github/workflows/build.yml') throw new Error('Source run must use build.yml');
+            if (!/^[a-f0-9]{40}$/.test(run.head_sha)) throw new Error('Invalid source commit');
+            async function readSource(path) {
+              const {data} = await github.rest.repos.getContent({...repo, path, ref: run.head_sha});
+              if (Array.isArray(data) || data.type !== 'file' || data.encoding !== 'base64') throw new Error(`Missing source manifest: ${path}`);
+              return Buffer.from(data.content, 'base64').toString('utf8');
+            }
+            const cargo = await readSource('agent/Cargo.toml');
+            const viewer = await readSource('viewer/Tailwatch.App/Tailwatch.App.csproj');
+            if (cargo.match(/^version\s*=\s*"([^"]+)"/m)?.[1] !== version || viewer.match(/<Version>([^<]+)<\/Version>/)?.[1] !== version)
+              throw new Error('Requested tag version does not match source manifests at the build commit');
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {...repo, run_id: runId, per_page: 100});
+            const bundles = artifacts.filter(a => a.name === 'release-bundles' && !a.expired);
+            if (bundles.length !== 1) throw new Error('Source run must have exactly one unexpired release-bundles artifact');
+            core.setOutput('sha', run.head_sha);
+            core.setOutput('version', version);
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-bundles
+          path: bundles
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.run_id }}
+      - name: Verify bundle names and checksums without executing artifacts
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+        with:
+          script: |
+            const fs = require('fs');
+            const crypto = require('crypto');
+            const version = process.env.RELEASE_VERSION;
+            const archives = ['windows-x64', 'linux-x64', 'macos-arm64'].map(p => `Tailwatch-v${version}-${p}.zip`);
+            const expected = [...archives, 'SHA256SUMS.txt'].sort();
+            if (JSON.stringify(fs.readdirSync('bundles').sort()) !== JSON.stringify(expected)) throw new Error('Unexpected release bundle files');
+            const sums = fs.readFileSync('bundles/SHA256SUMS.txt', 'utf8').trim().split('\n');
+            if (sums.length !== archives.length) throw new Error('Wrong checksum entry count');
+            for (const name of archives) {
+              const hash = crypto.createHash('sha256').update(fs.readFileSync(`bundles/${name}`)).digest('hex');
+              if (sums.filter(line => line === `${hash}  ${name}`).length !== 1) throw new Error(`Checksum mismatch: ${name}`);
+            }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verified-draft-files
+          path: bundles/
+          if-no-files-found: error
+          retention-days: 7
+  draft:
+    needs: validate
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      # No checkout, build tools or source/artifact scripts run with this write token.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: verified-draft-files
+          path: bundles
+      - name: Create a new draft prerelease at the verified commit
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          SOURCE_SHA: ${{ needs.validate.outputs.sha }}
+        with:
+          script: |
+            const fs = require('fs');
+            const crypto = require('crypto');
+            const repo = context.repo;
+            const version = process.env.RELEASE_VERSION;
+            const sha = process.env.SOURCE_SHA;
+            const tag = `v${version}`;
+            if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error('Invalid source SHA');
+            try {
+              await github.rest.git.getRef({...repo, ref: `tags/${tag}`});
+              throw new Error(`Tag ${tag} already exists; existing tags are never changed`);
+            } catch (error) { if (error.status !== 404) throw error; }
+            const releases = await github.paginate(github.rest.repos.listReleases, {...repo, per_page: 100});
+            if (releases.some(r => r.tag_name === tag)) throw new Error(`Release ${tag} already exists; inspect it manually`);
+            const archives = ['windows-x64', 'linux-x64', 'macos-arm64'].map(p => `Tailwatch-v${version}-${p}.zip`);
+            const names = [...archives, 'SHA256SUMS.txt'];
+            if (JSON.stringify(fs.readdirSync('bundles').sort()) !== JSON.stringify([...names].sort())) throw new Error('Unexpected release bundle files');
+            const sums = fs.readFileSync('bundles/SHA256SUMS.txt', 'utf8').trim().split('\n');
+            if (sums.length !== archives.length) throw new Error('Wrong checksum entry count');
+            for (const name of archives) {
+              const hash = crypto.createHash('sha256').update(fs.readFileSync(`bundles/${name}`)).digest('hex');
+              if (sums.filter(line => line === `${hash}  ${name}`).length !== 1) throw new Error(`Checksum mismatch: ${name}`);
+            }
+            const {data: release} = await github.rest.repos.createRelease({
+              ...repo, tag_name: tag, target_commitish: sha, name: `Tailwatch ${tag}`,
+              draft: true, prerelease: true,
+              body: `Built from commit ${sha}.\n\nUnsigned preview binaries; review the assets and platform trust prompts before publishing.\n\nSHA256SUMS.txt verifies archive integrity; it is not a signature.`
+            });
+            for (const name of names) {
+              await github.rest.repos.uploadReleaseAsset({
+                ...repo, release_id: release.id, name,
+                data: fs.readFileSync(`bundles/${name}`),
+                headers: {'content-type': name.endsWith('.zip') ? 'application/zip' : 'text/plain'}
+              });
+            }
+            core.notice(`Draft prerelease created: ${release.html_url}`);

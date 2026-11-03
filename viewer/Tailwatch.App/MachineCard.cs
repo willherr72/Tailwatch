@@ -28,6 +28,7 @@ internal sealed class MachineCard : UserControl
     readonly Label status;
     readonly Meter cpu=new(){Caption="CPU"},gpu=new(){Caption="GPU"},ram=new(){Caption="RAM"};
     readonly Label detail;
+    readonly HistoryGraph history=new(){Visible=false};
     readonly ToolTip tooltip=new();
     readonly TableLayoutPanel meters;
     MachineState state;
@@ -46,7 +47,7 @@ internal sealed class MachineCard : UserControl
         for(int i=0;i<3;i++)meters.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,33.333f));
         foreach(var meter in new[]{cpu,gpu,ram}){meter.Dock=DockStyle.Fill;meter.Margin=new Padding(0,0,16,0);meters.Controls.Add(meter);}
         detail=new Label{ForeColor=Theme.Muted,BackColor=Theme.Card,Padding=new Padding(10),Location=new Point(4,91),AutoSize=false,Visible=false,UseMnemonic=false};
-        Controls.AddRange([title,status,meters,detail]);
+        Controls.AddRange([title,status,meters,detail,history]);
         Resize+=(_,_)=>LayoutChildren();
         UpdateState(state);
     }
@@ -57,6 +58,7 @@ internal sealed class MachineCard : UserControl
         meters.SetBounds(S(4),S(43),Width-S(8),S(40));
         foreach(var meter in new[]{cpu,gpu,ram})meter.Margin=new Padding(0,0,S(16),0);
         detail.SetBounds(S(4),S(91),Width-S(8),detail.Height);detail.Padding=new Padding(S(10));
+        history.SetBounds(S(4),detail.Bottom+S(6),Width-S(8),S(124));
     }
     protected override void OnHandleCreated(EventArgs e){base.OnHandleCreated(e);LayoutChildren();UpdateDetails();}
     protected override void OnDpiChangedAfterParent(EventArgs e){base.OnDpiChangedAfterParent(e);LayoutChildren();UpdateDetails();}
@@ -66,6 +68,7 @@ internal sealed class MachineCard : UserControl
         title.AccessibleName=$"{value.Peer.Name}. Expand machine details";
         status.Text=value.Status=="Live"?value.Peer.Os:value.Status;tooltip.SetToolTip(status,status.Text);
         cpu.Value=value.Cpu;gpu.Value=value.Gpu;gpu.Partial=value.PartialGpu;ram.Value=value.Ram;
+        history.UpdateHistory(value.History);
         foreach(var meter in new[]{cpu,gpu,ram})meter.Invalidate();
         UpdateDetails();
     }
@@ -74,7 +77,7 @@ internal sealed class MachineCard : UserControl
     void UpdateDetails()
     {
         title.Text=$"{(expanded?"▾":"▸")}  {state.Peer.Name}{(state.Peer.IsSelf?"  · this PC":"")}";
-        detail.Visible=expanded;if(!expanded){Height=S(88);return;}
+        detail.Visible=history.Visible=expanded;if(!expanded){Height=S(88);return;}
         var s=state.Snapshot;
         var lines=new List<string>{state.Peer.Os+"  ·  "+string.Join(", ",state.Peer.Addresses)};
         if(s!=null && state.Status=="Live")
@@ -102,7 +105,8 @@ internal sealed class MachineCard : UserControl
         if(state.LastSuccess.HasValue)lines.Add($"Last reading  {state.LastSuccess.Value.ToLocalTime():HH:mm:ss}");
         detail.Text=string.Join(Environment.NewLine,lines);
         detail.Height=Math.Max(S(70),TextRenderer.MeasureText(detail.Text,Font,new Size(Math.Max(S(180),Width-S(28)),S(1000)),TextFormatFlags.WordBreak).Height+S(24));
-        Height=detail.Bottom+S(12);
+        history.SetBounds(S(4),detail.Bottom+S(6),Width-S(8),S(124));
+        Height=history.Bottom+S(12);
     }
     protected override void OnPaint(PaintEventArgs e){base.OnPaint(e);using var pen=new Pen(Theme.Border);e.Graphics.DrawLine(pen,0,0,Width,0);}
     protected override void Dispose(bool disposing){if(disposing){tooltip.Dispose();title.Font.Dispose();}base.Dispose(disposing);}

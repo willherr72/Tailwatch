@@ -2,7 +2,7 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType><TargetFramework>net10.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <ApplicationManifest>app.manifest</ApplicationManifest><AssemblyName>Tailwatch</AssemblyName><Version>0.1.0</Version>
+    <ApplicationManifest>app.manifest</ApplicationManifest><AssemblyName>Tailwatch</AssemblyName><Version>0.2.0</Version>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="../Tailwatch.Core/Tailwatch.Core.csproj"/></ItemGroup>
 </Project>

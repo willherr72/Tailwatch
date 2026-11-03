@@ -36,13 +36,15 @@ internal static class Program
         finally{Console.OutputEncoding=encoding;Environment.SetEnvironmentVariable("TAILWATCH_TAILSCALE",executable);}
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
+        CheckAgentSetup(args.Length>0?Path.ChangeExtension(args[0],"setup.png"):null);
         using var panel=new TrayPanel();
         var rows=new List<MachineState>();
         foreach(var (id,name,os,cpu,gpu,ram) in new[]{("a","GPU workstation","linux",54d,92d,78d),("b","Mac Studio","macOS",26d,11d,61d),("c","Windows desktop","windows",8d,4d,42d)})
         {
             var p=new Peer(id,name,os,[IPAddress.Parse("100.64.0.1")],true);
             var s=new Snapshot{NodeId=id,BootId="demo",IntervalMs=2000,Cpu=new(){Value=cpu,Status="ok",Model="Example CPU",LogicalCores=12},Ram=new(8UL<<30,16UL<<30,"ok"),Gpus=[new("gpu","Example GPU","NVIDIA",new(gpu,"ok"),"active_time")]};
-            rows.Add(new(p,true,"Live",s,DateTimeOffset.Now,cpu,gpu,ram));
+            var readings=Enumerable.Range(0,61).Select(i=>new HistoryPoint(TimeSpan.FromSeconds(900-i*15),i is >=27 and <=30?null:Math.Clamp(cpu+Math.Sin(i/4d)*18,0,100),i is >=27 and <=30?null:Math.Clamp(gpu+Math.Sin(i/6d)*12,0,100),i is >=27 and <=30?null:Math.Clamp(ram+Math.Cos(i/8d)*7,0,100))).ToArray();
+            rows.Add(new(p,true,"Live",s,DateTimeOffset.Now,cpu,gpu,ram,History:readings));
         }
         rows.Add(new(new("d","Build server","linux",[IPAddress.Parse("100.64.0.4")],false),true,"Offline"));
         panel.UpdateMachines("Sample tailnet",rows,null);
@@ -55,6 +57,9 @@ internal static class Program
         var card=list.Controls.OfType<MachineCard>().First();
         card.Controls.OfType<Button>().Single().PerformClick();Application.DoEvents();
         if(card.Height<=100)throw new Exception("Details did not expand");
+        var history=Find(card).SingleOrDefault(c=>c.AccessibleName=="CPU, GPU and RAM history")??throw new Exception("Expanded history graphs missing");
+        if(!history.Visible||history.Bottom>card.ClientSize.Height||history.Height<70)throw new Exception("Expanded history graph is hidden or clipped");
+        if(args.Length>0)Capture(panel,Path.ChangeExtension(args[0],"history.png"),false);
         card.Controls.OfType<Button>().Single().PerformClick();
         var search=Find(panel).OfType<TextBox>().Single();
         search.Text="Mac";Application.DoEvents();
@@ -94,9 +99,41 @@ internal static class Program
             using var menuImage=new Bitmap(sortMenu.Width,sortMenu.Height);sortMenu.DrawToBitmap(menuImage,sortMenu.ClientRectangle);
             menuImage.Save(Path.ChangeExtension(args[0],"menu.png"));sortMenu.Close();
         }
-        Console.WriteLine("Native UI smoke passed: reporting filter and recovery, account menu and CLI success/failure/cancellation, UTF-8 process output, scrollbar drag/keys/wheel, steady 43-machine refresh, search, DPI, offline recovery, close action.");
+        Console.WriteLine("Native UI smoke passed: setup/platform and stale-address protection, expanded history graphs, reporting filter and recovery, account menu and CLI success/failure/cancellation, UTF-8 process output, scrollbar drag/keys/wheel, steady 43-machine refresh, search, DPI, offline recovery, close action.");
     }
     static IEnumerable<Control> Find(Control parent)=>parent.Controls.Cast<Control>().SelectMany(c=>new[]{c}.Concat(Find(c)));
+    static void CheckAgentSetup(string? capture)
+    {
+        using var client=new HttpClient();using var monitor=new TailwatchMonitor(client,new());
+        var self=new Peer("viewer","Viewer","windows",[IPAddress.Parse("100.64.0.10")],true,true);
+        var target=new Peer("mac","Test Mac","macOS",[IPAddress.Parse("100.64.0.11")],true);
+        monitor.SetDirectory(new("home","Sample network",self,[self,target]));
+        using var form=new AgentSetupForm(monitor,"mac");form.StartPosition=FormStartPosition.Manual;form.Location=new Point(-2000,-2000);form.Show();Application.DoEvents();
+        var command=Find(form).OfType<TextBox>().Single();var copy=Find(form).OfType<Button>().Single(b=>b.AccessibleName=="Copy agent installation command");
+        if(!copy.Enabled||!command.Text.Contains("install-macos.sh")||!command.Text.Contains("100.64.0.10"))throw new Exception("Guided setup did not use selected platform and viewer IP");
+        if(form.Controls.Cast<Control>().Any(c=>c.Visible&&(c.Bottom>form.ClientSize.Height||c.Right>form.ClientSize.Width)))throw new Exception("Setup controls extend outside the dialog at display DPI");
+        if(capture!=null)Capture(form,capture,false);
+        Find(form).OfType<CheckBox>().Single().Checked=true;
+        if(command.Text.Contains("install-macos.sh")||!command.Text.Contains("launchctl bootstrap"))throw new Exception("Update mode did not preserve existing configuration");
+        monitor.DiscoveryFailed("Temporary discovery error");Thread.Sleep(600);Application.DoEvents();
+        if(copy.Enabled||command.Text.Length!=0)throw new Exception("Setup retained copyable addresses after discovery failed");
+        monitor.SetDirectory(new("home","Sample network",self,[self,target]));
+        monitor.SetDirectory(new("work","Other network",self with {Id="other"},[self with {Id="other"}]));copy.PerformClick();
+        if(copy.Enabled||command.Text.Length!=0)throw new Exception("Setup copied stale viewer addresses after a network change");
+        form.Close();
+        foreach(bool failed in new[]{false,true})
+        {
+            monitor.SetDirectory(new("home","Sample network",self,[self,target]));int requests=0;
+            using var verify=new AgentSetupForm(monitor,"mac",_=>{
+                requests++;
+                return failed?Task.FromException<DirectorySnapshot>(new IOException("discovery failed")):Task.FromResult(new DirectorySnapshot("external-switch","Other network",self,[self]));
+            });
+            verify.StartPosition=FormStartPosition.Manual;verify.Location=new Point(-2000,-2000);verify.Show();Application.DoEvents();
+            var verifyCopy=Find(verify).OfType<Button>().Single(b=>b.AccessibleName=="Copy agent installation command");verifyCopy.PerformClick();Application.DoEvents();
+            if(requests!=1||verifyCopy.Enabled||Find(verify).OfType<TextBox>().Single().Text.Length!=0)throw new Exception("Copy did not freshly validate the actual tailnet before exposing commands");
+            verify.Close();
+        }
+    }
     static void CheckAccountMenu(TrayPanel panel,List<MachineState> rows)
     {
         var button=Find(panel).OfType<Button>().Single(b=>b.AccessibleName=="Switch tailnet");
@@ -186,7 +223,7 @@ internal static class Program
         panel.Refresh();Application.DoEvents();
         using var image=new Bitmap(panel.Width,panel.Height);
         if(screen){using var graphics=Graphics.FromImage(image);graphics.CopyFromScreen(panel.Location,Point.Empty,panel.Size);}
-        else panel.DrawToBitmap(image,panel.ClientRectangle);
+        else panel.DrawToBitmap(image,new Rectangle(Point.Empty,panel.Size));
         image.Save(path);
     }
 }

@@ -2,14 +2,14 @@ using Tailwatch.Core;
 namespace Tailwatch.App;
 internal sealed class SettingsForm : Form
 {
-    public SettingsForm(TailwatchMonitor monitor,Action save)
+    public SettingsForm(TailwatchMonitor monitor,Action save,Action<string?>? setup=null)
     {
         var networkKey=monitor.NetworkKey;
         Text="Tailwatch · Machines";Size=new Size(620,430);StartPosition=FormStartPosition.CenterScreen;
         BackColor=Theme.Background;ForeColor=Theme.Text;Font=new Font("Segoe UI",9f);MinimizeBox=false;MaximizeBox=false;
         var note=new Label{Text="Choose machines in the active tailnet. Each needs a running Tailwatch agent.",Dock=DockStyle.Top,Height=48,Padding=new Padding(12)};
         var grid=new DataGridView{Dock=DockStyle.Fill,AllowUserToAddRows=false,AllowUserToDeleteRows=false,RowHeadersVisible=false,AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.Fill,BackgroundColor=Theme.Background,
-            BorderStyle=BorderStyle.None,EnableHeadersVisualStyles=false,GridColor=Theme.Border};
+            BorderStyle=BorderStyle.None,EnableHeadersVisualStyles=false,GridColor=Theme.Border,SelectionMode=DataGridViewSelectionMode.FullRowSelect,MultiSelect=false};
         grid.DefaultCellStyle.BackColor=Theme.Card;grid.DefaultCellStyle.ForeColor=Theme.Text;
         grid.ColumnHeadersDefaultCellStyle.BackColor=Theme.Background;grid.ColumnHeadersDefaultCellStyle.ForeColor=Theme.Text;
         grid.Columns.Add(new DataGridViewCheckBoxColumn{Name="Monitor",FillWeight=20});
@@ -31,6 +31,10 @@ internal sealed class SettingsForm : Form
             save();DialogResult=DialogResult.OK;Close();
         });apply.Dock=DockStyle.Bottom;apply.Height=38;
         Controls.Add(grid);Controls.Add(note);Controls.Add(apply);
+        if(setup!=null){var install=Theme.Button("Set up selected machine…",(_,_)=>{
+            if(monitor.NetworkKey!=networkKey){MessageBox.Show("The active tailnet changed. Reopen Machines first.");return;}
+            setup(grid.CurrentRow?.Tag as string);
+        });install.Dock=DockStyle.Bottom;install.Height=38;Controls.Add(install);install.BringToFront();}
         var self=monitor.Machines.FirstOrDefault(m=>m.Peer.IsSelf);
         if(self!=null){var address=new TextBox{Dock=DockStyle.Bottom,ReadOnly=true,Text="Viewer Tailscale IP: "+string.Join(", ",self.Peer.Addresses),BackColor=Theme.Card,ForeColor=Theme.Text,BorderStyle=BorderStyle.FixedSingle};Controls.Add(address);address.BringToFront();}
     }

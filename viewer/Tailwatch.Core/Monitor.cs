@@ -1,9 +1,9 @@
 using System.Net;
 namespace Tailwatch.Core;
-public record MachineState(Peer Peer,bool Monitored,string Status,Snapshot? Snapshot=null,DateTimeOffset? LastSuccess=null,double? Cpu=null,double? Gpu=null,double? Ram=null,bool PartialGpu=false);
+public record MachineState(Peer Peer,bool Monitored,string Status,Snapshot? Snapshot=null,DateTimeOffset? LastSuccess=null,double? Cpu=null,double? Gpu=null,double? Ram=null,bool PartialGpu=false,IReadOnlyList<HistoryPoint>? History=null);
 public sealed class TailwatchMonitor : IDisposable
 {
-    sealed class Entry(Peer peer,bool monitored)
+    sealed class Entry(Peer peer,bool monitored,TimeProvider clock)
     {
         public Peer Peer=peer;
         public bool Monitored=monitored;
@@ -13,6 +13,7 @@ public sealed class TailwatchMonitor : IDisposable
         public long Received,UnchangedSince,LastAttempt;
         public long? WarmupStarted;
         public bool Attempted,Backoff,InFlight;
+        public MetricHistory History=new(clock);
     }
     readonly object sync=new();
     readonly HttpClient client;
@@ -37,6 +38,7 @@ public sealed class TailwatchMonitor : IDisposable
         var elapsed=s==null?0:Age(e.Received);
         var live=e.Monitored && e.Peer.Online && e.Status=="Live" && s!=null && s.AgeMs+elapsed<=10000 && Age(e.UnchangedSince)<=10000;
         var status=!e.Monitored?"Not monitored":!e.Peer.Online?"Offline":e.Status=="Live"&&!live?"Stale":e.Status;
+        if(!live)e.History.Gap();
         bool Fresh(Reading r)=>r.IsFresh && r.AgeMs+elapsed<=10000;
         var gpus=live?s!.Gpus.Where(g=>Fresh(g.Utilization)).ToList():[];
         double? gpu=gpus.Select(g=>g.Utilization.Value).DefaultIfEmpty(null).Max();
@@ -46,7 +48,7 @@ public sealed class TailwatchMonitor : IDisposable
         return new(e.Peer,e.Monitored,status,display,e.LastSuccess,
             live&&Fresh(s!.Cpu)?s.Cpu.Value:null,gpu,
             live&&s!.Ram.AgeMs+elapsed<=10000?s.Ram.Percentage:null,
-            gpu!=null&&(s!.GpuStatus=="partial"||gpus.Count!=s.Gpus.Count));
+            gpu!=null&&(s!.GpuStatus=="partial"||gpus.Count!=s.Gpus.Count),e.History.Read());
     }
     void NewScope(bool clear=true)
     {
@@ -68,12 +70,12 @@ public sealed class TailwatchMonitor : IDisposable
                 {
                     bool changed=!current.Peer.Addresses.SequenceEqual(peer.Addresses)||current.Peer.Online!=peer.Online;
                     current.Peer=peer;
-                    if(changed){current.Snapshot=null;current.Status=peer.Online?"Connecting":"Offline";current.Backoff=false;}
+                    if(changed){current.Snapshot=null;current.Status=peer.Online?"Connecting":"Offline";current.Backoff=false;current.History.Gap();}
                 }
                 else
                 {
                     bool enabled=profile.Monitored.TryGetValue(peer.Id,out var choice)?choice:peer.Os is "windows" or "linux" or "macOS" or "macos" or "darwin";
-                    entries[peer.Id]=new(peer,enabled);
+                    entries[peer.Id]=new(peer,enabled,clock);
                 }
             }
         }
@@ -84,7 +86,7 @@ public sealed class TailwatchMonitor : IDisposable
     }
     public void DiscoveryFailed(string message)
     {
-        lock(sync){NewScope(false);error=message;}
+        lock(sync){NewScope(false);error=message;foreach(var entry in entries.Values)entry.History.Gap();}
     }
     public void SetMonitored(string id,bool enabled)
     {
@@ -92,12 +94,13 @@ public sealed class TailwatchMonitor : IDisposable
         {
             settings.For(key).Monitored[id]=enabled;e.Monitored=enabled;
             e.Snapshot=null;e.Backoff=false;e.Status=e.Peer.Online?"Connecting":"Offline";
+            if(!enabled)e.History.Clear();else e.History.Gap();
         }
     }
     public void SetPort(string id,int port)
     {
         if(port is <1 or >65535)throw new ArgumentOutOfRangeException(nameof(port));
-        lock(sync){settings.For(key).Ports[id]=port;if(entries.TryGetValue(id,out var e)){e.Backoff=false;e.Snapshot=null;e.Status="Connecting";}}
+        lock(sync){settings.For(key).Ports[id]=port;if(entries.TryGetValue(id,out var e)){e.Backoff=false;e.Snapshot=null;e.Status="Connecting";e.History.Gap();}}
     }
     public int GetPort(string id) {lock(sync)return settings.For(key).Ports.GetValueOrDefault(id,48173);}
     public Task PollAsync(bool force=false,CancellationToken token=default)
@@ -156,6 +159,9 @@ public sealed class TailwatchMonitor : IDisposable
                     e.Snapshot=sample;e.Received=now;e.LastAttempt=now;e.Attempted=true;e.Backoff=false;e.WarmupStarted=null;
                     e.Status=sample.AgeMs>10000||Age(e.UnchangedSince)>10000?"Stale":"Live";
                     if(e.Status=="Live")e.LastSuccess=clock.GetUtcNow();
+                    var view=View(e);
+                    if(e.Status=="Live")e.History.Record(sample.BootId,sample.Sequence,view.Cpu,view.Gpu,view.Ram);
+                    else e.History.Gap();
                 }
         }
         catch(OperationCanceledException)when(networkToken.IsCancellationRequested||token.IsCancellationRequested){}
@@ -192,6 +198,7 @@ public sealed class TailwatchMonitor : IDisposable
         {
             if(!Current(peer,port,version,out var e))return;
             e!.Status=e.Snapshot!=null?"Stale":status;
+            e.History.Gap();
             // The loopback helper follows the local Tailscale identity on its own
             // timer. During a switch it can briefly be unavailable or one identity
             // behind discovery. Recheck it on the next tick, not 30 seconds later.

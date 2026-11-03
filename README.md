@@ -4,12 +4,20 @@ A small Windows system tray app for checking CPU, GPU, and RAM usage across your
 
 Click the tray icon to open a compact panel. Search or sort machines, expand a row for GPU and memory details, and use **Reporting only** to hide machines that are not sending fresh Tailwatch metrics. Hidden machines keep being checked and reappear when they report again.
 
+Expanded rows also show **15-minute CPU/GPU/RAM history**. It is kept only in this viewer's memory, starts collecting when the app runs, and clears when you disconnect or change tailnets. Missing or stale readings leave gaps instead of appearing as zero. The time and utilization scales stay fixed; opening a new graph does not stretch a few samples into a full history. Background sampling remains less frequent while the panel is closed.
+
 ## First run on Windows
 
 1. Put `Tailwatch.exe` and `tailwatch-agent.exe` in the same folder.
 2. Connect Tailscale and run `Tailwatch.exe`.
 3. Click the green bars icon beside the clock. Windows may initially put it in the tray overflow menu.
 4. Use **Machines** to select devices and change an agent's port. Right-click the tray icon for startup and quit options.
+
+For another machine, select it in **Machines → Set up selected machine…**, or right-click the tray icon and choose **Set up an agent…**. Select Windows x64, Linux x64, or Apple silicon; download and extract the ZIP on that machine, then copy the generated install command. It includes this viewer's current Tailscale addresses. Setup does not run remote commands automatically and invalidates its command if the active tailnet changes. Windows service installation needs an elevated PowerShell; Linux's packaged system service needs sudo; the Mac installer runs as the signed-in user.
+
+**Update an existing agent** gives commands that replace its binary while preserving configuration. These commands apply to installations made by the packaged installers; they do not enroll a new viewer or migrate a custom per-user Linux installation. Unix packaged installers use port 48173; setup directs custom-port installations to the manual configuration instructions. Setup currently links to the published, protocol-compatible **v0.1.0 agents**, rather than an unpublished download.
+
+**Downloads and updates…** opens official releases for manual updates. Exit the Windows tray app before replacing its files, and keep the viewer and agent together. Builds remain unsigned until real signing credentials and verification are configured.
 
 The viewer starts a local-only agent automatically if no agent is listening on port 48173. This child exits when you quit the viewer. Installing a Windows service is needed only if this computer must report to other viewers even when the tray app is closed. Quit the viewer before installing that service.
 
@@ -28,6 +36,8 @@ A temporary discovery error keeps the last known machine list and expanded rows 
 The ordinary Tailscale client connects to one account at a time. This version does not show several separate tailnets simultaneously. Simultaneous aggregation would need separate network clients or a collector in each tailnet.
 
 An agent's remote configuration is tied to the node identity active when it was configured. If that machine switches to another tailnet, remote serving stops until the configured identity returns. Re-enrollment with a new node ID requires new configuration. The viewer's local-only helper follows its active local identity.
+
+For build artifacts, repeatable release ZIPs, and the manual draft-prerelease workflow, see [distribution and CI](docs/distribution.md).
 
 ## Devices without an agent
 

@@ -25,6 +25,8 @@ internal sealed class TrayContext : ApplicationContext
         this.show=show;settings=AppSettings.Load(settingsPath);monitor=new(http,settings);drawing=Theme.Icon();
         var menu=Theme.Menu();
         menu.Items.Add("Open",null,(_,_)=>Toggle(true));menu.Items.Add("Machines…",null,(_,_)=>OpenSettings());
+        menu.Items.Add("Set up an agent…",null,(_,_)=>OpenSetup(null));
+        menu.Items.Add("Downloads and updates…",null,(_,_)=>OpenDownloads());
         var startup=new ToolStripMenuItem("Start with Windows"){Checked=StartupEnabled(),CheckOnClick=true};
         startup.Click+=(_,_)=>{try{SetStartup(startup.Checked);}catch(Exception e){Log.Write(e.Message);startup.Checked=StartupEnabled();}};
         menu.Items.Add(startup);menu.Items.Add(new ToolStripSeparator());menu.Items.Add("Quit",null,(_,_)=>ExitThread());
@@ -54,8 +56,18 @@ internal sealed class TrayContext : ApplicationContext
     void OpenSettings()
     {
         if(switching)return;
-        panel.Hide();using var dialog=new SettingsForm(monitor,Save);dialog.ShowDialog();
+        panel.Hide();using var dialog=new SettingsForm(monitor,Save,OpenSetup);dialog.ShowDialog();
         next=DateTime.MinValue;_=RefreshAsync(true);
+    }
+    void OpenSetup(string? machineId)
+    {
+        if(switching)return;
+        panel.Hide();using var dialog=new AgentSetupForm(monitor,machineId);dialog.ShowDialog();
+    }
+    void OpenDownloads()
+    {
+        try{using var process=Process.Start(new ProcessStartInfo(AgentSetup.Releases.AbsoluteUri){UseShellExecute=true});}
+        catch(System.ComponentModel.Win32Exception){MessageBox.Show("Could not open your browser. Visit github.com/willherr72/Tailwatch/releases.","Tailwatch");}
     }
     void OpenTailscale()
     {
