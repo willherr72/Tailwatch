@@ -1,0 +1,11 @@
+target/
+**/bin/
+**/obj/
+dist/
+.superpowers/
+.tools/
+*.user
+*.log
+agent.local.json
+.vs/
+
