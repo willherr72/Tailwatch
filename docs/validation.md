@@ -7,7 +7,7 @@
 - Package validation: 17 tests passed for exact contents, archive round-trip hashes and executable modes, each binary architecture, missing/extra files, existing output directories, and invalid/mismatched versions.
 - Draft-workflow boundaries: 20 tests passed for source repository/run/version checks, expired/duplicate artifacts, refusing existing tags/releases, altered bundles and draft-only uploads. These execute the workflow's JavaScript with controlled GitHub responses; they do not publish a release.
 - Rust's 13 tests and the local Windows release builds passed. A fresh independent review found stale setup addresses, missing short-discovery history gaps, and a retired macOS runner image; those were addressed with regression checks and the move to macos-15.
-- The new hosted package and cold-start jobs still require their first successful GitHub Actions run. Signing is not configured; physical sleep/reboot testing remains as documented below.
+- [The first expanded hosted run passed all eight jobs](https://github.com/willherr72/Tailwatch/actions/runs/41708908762) at code commit `88b0352`: native builds/tests, packaging, package checks on all three platforms, and a cold start of the packaged Windows viewer with its local agent. Signing remains unconfigured by the user's choice; physical sleep/reboot testing remains as documented below.
 
 ## Executed checks
 
