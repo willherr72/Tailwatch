@@ -17,7 +17,8 @@ internal sealed class TrayContext : ApplicationContext
     readonly HttpClient http=new(new SocketsHttpHandler{UseProxy=false,AllowAutoRedirect=false,ConnectTimeout=TimeSpan.FromSeconds(2),MaxConnectionsPerServer=2}){Timeout=Timeout.InfiniteTimeSpan};
     readonly CancellationTokenSource lifetime=new();
     Process? agent;
-    bool busy,ending;
+    bool busy,ending,switching;
+    int directoryGeneration,accountRequest;
     DateTime next=DateTime.MinValue;
     public TrayContext(EventWaitHandle show)
     {
@@ -33,6 +34,9 @@ internal sealed class TrayContext : ApplicationContext
         panel.SettingsRequested+=OpenSettings;
         panel.OpenTailscaleRequested+=OpenTailscale;
         panel.SortChanged+=()=>{if(monitor.NetworkKey.Length>0){settings.For(monitor.NetworkKey).Sort=panel.SortValue;Save();}};
+        panel.FilterChanged+=()=>{if(monitor.NetworkKey.Length>0){settings.For(monitor.NetworkKey).ReportingOnly=panel.ReportingOnly;Save();}};
+        panel.AccountsRequested+=()=>_=LoadAccountsAsync();
+        panel.AccountSwitchRequested+=account=>_=SwitchAccountAsync(account);
         timer.Tick+=async(_,_)=>{
             if(ending)return;
             if(show.WaitOne(0))Toggle(true);
@@ -49,6 +53,7 @@ internal sealed class TrayContext : ApplicationContext
     }
     void OpenSettings()
     {
+        if(switching)return;
         panel.Hide();using var dialog=new SettingsForm(monitor,Save);dialog.ShowDialog();
         next=DateTime.MinValue;_=RefreshAsync(true);
     }
@@ -71,16 +76,57 @@ internal sealed class TrayContext : ApplicationContext
         var live=monitor.Machines.Count(m=>m.Status=="Live");
         icon.Text=$"Tailwatch · {live} reporting";
     }
+    async Task LoadAccountsAsync()
+    {
+        int request=++accountRequest;
+        try
+        {
+            var accounts=await Tailscale.ReadAccountsAsync(lifetime.Token);
+            if(!ending&&request==accountRequest)panel.SetAccounts(accounts);
+        }
+        catch(OperationCanceledException)when(lifetime.IsCancellationRequested){}
+        catch(Exception e)when(e is IOException or ProtocolException or OperationCanceledException or System.ComponentModel.Win32Exception)
+        {
+            if(!ending&&request==accountRequest)panel.SetAccounts(null,"Accounts unavailable. Open Tailscale below.");
+        }
+    }
+    async Task SwitchAccountAsync(TailscaleAccount account)
+    {
+        if(switching||ending||account.Selected)return;
+        switching=true;directoryGeneration++;accountRequest++;
+        monitor.Disconnect("Switching tailnet…");panel.SetSwitching(account.Tailnet.Length>0?account.Tailnet:account.Nickname);UpdatePanel();
+        string? failure=null;
+        try{await Tailscale.SwitchAccountAsync(account.Id,lifetime.Token);}
+        catch(OperationCanceledException)when(lifetime.IsCancellationRequested){}
+        catch(Exception e)when(e is IOException or ProtocolException or OperationCanceledException or System.ComponentModel.Win32Exception)
+        {
+            failure=e is ProtocolException?e.Message:e is OperationCanceledException?"The account switch timed out. Check the active account in Tailscale.":"Could not switch accounts. Check that Tailscale is running.";
+        }
+        finally
+        {
+            switching=false;
+            if(!ending)
+            {
+                panel.SetSwitching(null);next=DateTime.MinValue;
+                // Re-read the actual connection even on failure: the daemon can
+                // complete a switch after the CLI has timed out.
+                await RefreshAsync(true);
+            }
+        }
+        if(failure!=null&&!ending)MessageBox.Show(panel,failure,"Could not switch tailnet",MessageBoxButtons.OK,MessageBoxIcon.Information);
+    }
     async Task RefreshAsync(bool force)
     {
-        if(busy||ending)return;
+        if(busy||ending||switching)return;
+        int generation=directoryGeneration;
         busy=true;
         try
         {
             var directory=await Tailscale.ReadAsync(lifetime.Token);
+            if(ending||generation!=directoryGeneration)return;
             bool changed=directory.Key!=monitor.NetworkKey;
             monitor.SetDirectory(directory);
-            if(changed)panel.SetSort(settings.For(directory.Key).Sort);
+            if(changed){var profile=settings.For(directory.Key);panel.SetSort(profile.Sort);panel.SetReportingOnly(profile.ReportingOnly);}
             UpdatePanel();
             // Discovery must keep running even while remote peers are timing out.
             _=PollAndRenderAsync(force);
@@ -88,12 +134,13 @@ internal sealed class TrayContext : ApplicationContext
         catch(OperationCanceledException)when(lifetime.IsCancellationRequested){}
         catch(Exception e)when(e is IOException or ProtocolException or OperationCanceledException or System.ComponentModel.Win32Exception)
         {
+            if(ending||generation!=directoryGeneration)return;
             var message=e is ProtocolException?e.Message:"Tailscale is unavailable. Check that it is running.";
             if(e is ProtocolException {Disconnected:true})monitor.Disconnect(message);
             else monitor.DiscoveryFailed(message);
             UpdatePanel();
         }
-        finally{busy=false;next=DateTime.UtcNow.AddSeconds(panel.Visible?2:15);}
+        finally{busy=false;next=generation!=directoryGeneration?DateTime.MinValue:DateTime.UtcNow.AddSeconds(panel.Visible?2:15);}
     }
     async Task PollAndRenderAsync(bool force)
     {

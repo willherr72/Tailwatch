@@ -2,7 +2,7 @@
 
 A small Windows system tray app for checking CPU, GPU, and RAM usage across your Tailscale machines.
 
-Click the tray icon to open a compact panel. Search or sort machines, expand a row for GPU and memory details, and hide devices you do not want to monitor.
+Click the tray icon to open a compact panel. Search or sort machines, expand a row for GPU and memory details, and use **Reporting only** to hide machines that are not sending fresh Tailwatch metrics. Hidden machines keep being checked and reappear when they report again.
 
 ## First run on Windows
 
@@ -13,17 +13,19 @@ Click the tray icon to open a compact panel. Search or sort machines, expand a r
 
 The viewer starts a local-only agent automatically if no agent is listening on port 48173. This child exits when you quit the viewer. Installing a Windows service is needed only if this computer must report to other viewers even when the tray app is closed. Quit the viewer before installing that service.
 
-Settings and a bounded diagnostic log live in `%LOCALAPPDATA%\Tailwatch`. Machine selections, ports, and sort preference are kept separately for each Tailscale identity. The app runs without administrator access.
+Settings and a bounded diagnostic log live in `%LOCALAPPDATA%\Tailwatch`. Machine selections, ports, sort preference, and the reporting filter are kept separately for each Tailscale identity. The app runs without administrator access.
 
 When Tailscale is disconnected, use **Open Tailscale** to launch its Windows app, connect there, and return to Tailwatch. Discovery resumes automatically; **Retry** checks immediately. The disconnected panel hides machine controls until a network is available.
 
 ## Multiple tailnets
 
-Tailwatch follows the **currently active account** in the installed Tailscale client. Switching accounts in Tailscale clears old readings and starts monitoring the newly visible machines. In-flight responses from the old network are discarded. Saved preferences return when you switch back.
+Tailwatch follows the **currently active account** in the installed Tailscale client. Click the tailnet name beneath the title to choose a saved Tailscale account. This switches the connection for the whole computer. The current account is checked; **Manage accounts in Tailscale…** opens Tailscale for sign-in or account management. The dropdown is also available while disconnected.
+
+Switching accounts clears old readings and starts monitoring the newly visible machines. In-flight responses from the old network are discarded. Saved preferences return when you switch back. If a switch fails or times out, Tailwatch reports the problem and rechecks the actual active connection.
 
 A temporary discovery error keeps the last known machine list and expanded rows visible, pauses new requests, and lets cached readings expire. An explicitly disconnected account clears the list. Discovery runs independently of slow remote requests.
 
-The ordinary Tailscale client connects to one account at a time. This version does not show several separate tailnets simultaneously and does not switch accounts for you. Simultaneous aggregation would need separate network clients or a collector in each tailnet.
+The ordinary Tailscale client connects to one account at a time. This version does not show several separate tailnets simultaneously. Simultaneous aggregation would need separate network clients or a collector in each tailnet.
 
 An agent's remote configuration is tied to the node identity active when it was configured. If that machine switches to another tailnet, remote serving stops until the configured identity returns. Re-enrollment with a new node ID requires new configuration. The viewer's local-only helper follows its active local identity.
 

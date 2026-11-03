@@ -5,6 +5,10 @@ using System.Text.Json;
 namespace Tailwatch.Core;
 public record Peer(string Id,string Name,string Os,List<IPAddress> Addresses,bool Online,bool IsSelf=false);
 public record DirectorySnapshot(string Key,string Name,Peer Self,List<Peer> Peers);
+public record TailscaleAccount(string Id,string Nickname,string Tailnet,string Account,bool Selected)
+{
+    public string Label => (Tailnet.Length>0?Tailnet:Nickname.Length>0?Nickname:Id)+(Account.Length>0?"  ·  "+Account:"");
+}
 public static class Tailscale
 {
     public static bool IsTailnet(IPAddress address)
@@ -51,20 +55,49 @@ public static class Tailscale
     public static string Executable => Environment.GetEnvironmentVariable("TAILWATCH_TAILSCALE") ??
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"Tailscale","tailscale.exe");
     public static async Task<DirectorySnapshot> ReadAsync(CancellationToken token=default)
+        =>Parse(await RunAsync(["status","--json"],TimeSpan.FromSeconds(2),"Tailscale is unavailable.",token));
+    static bool ValidAccountId(string id)=>id.Length is >0 and <=64&&id.All(char.IsAsciiHexDigit);
+    public static IReadOnlyList<TailscaleAccount> ParseAccounts(string json)
+    {
+        try
+        {
+            using var doc=JsonDocument.Parse(json);
+            if(doc.RootElement.ValueKind!=JsonValueKind.Array)throw new ProtocolException("Invalid Tailscale account list.");
+            var accounts=new List<TailscaleAccount>();var ids=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach(var item in doc.RootElement.EnumerateArray())
+            {
+                var id=Text(item,"id");
+                if(!ValidAccountId(id)||!ids.Add(id)||!item.TryGetProperty("selected",out var selected)||selected.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                    throw new ProtocolException("Invalid Tailscale account list.");
+                accounts.Add(new(id,Text(item,"nickname"),Text(item,"tailnet"),Text(item,"account"),selected.GetBoolean()));
+            }
+            return accounts;
+        }
+        catch(Exception e)when(e is JsonException or InvalidOperationException)
+        {throw new ProtocolException("Invalid Tailscale account list.");}
+    }
+    public static async Task<IReadOnlyList<TailscaleAccount>> ReadAccountsAsync(CancellationToken token=default)
+        =>ParseAccounts(await RunAsync(["switch","--list","--json"],TimeSpan.FromSeconds(3),"Could not list accounts. Open Tailscale to manage them.",token));
+    public static async Task SwitchAccountAsync(string id,CancellationToken token=default)
+    {
+        if(!ValidAccountId(id))throw new ArgumentException("Invalid Tailscale account ID.",nameof(id));
+        await RunAsync(["switch",id],TimeSpan.FromSeconds(15),"Tailscale could not switch accounts. Open Tailscale to check sign-in and permissions.",token);
+    }
+    static async Task<string> RunAsync(string[] arguments,TimeSpan duration,string failure,CancellationToken token)
     {
         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);
-        timeout.CancelAfter(TimeSpan.FromSeconds(2));
+        timeout.CancelAfter(duration);
         var info=new ProcessStartInfo(Executable) { UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true,
             StandardOutputEncoding=System.Text.Encoding.UTF8,StandardErrorEncoding=System.Text.Encoding.UTF8 };
-        info.ArgumentList.Add("status");info.ArgumentList.Add("--json");
+        foreach(var argument in arguments)info.ArgumentList.Add(argument);
         using var process=Process.Start(info)??throw new IOException("Could not start Tailscale.");
         try
         {
             var stdout=ReadLimitedAsync(process.StandardOutput,4*1024*1024,timeout.Token);
             var stderr=ReadLimitedAsync(process.StandardError,65536,timeout.Token);
             await Task.WhenAll(stdout,stderr,process.WaitForExitAsync(timeout.Token));
-            if(process.ExitCode!=0) throw new ProtocolException("Tailscale is unavailable.");
-            return Parse(await stdout);
+            if(process.ExitCode!=0) throw new ProtocolException(failure);
+            return await stdout;
         }
         finally { if(!process.HasExited) process.Kill(true); }
     }

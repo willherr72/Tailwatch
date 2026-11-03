@@ -5,6 +5,7 @@ public class ProfileSettings
     public Dictionary<string,bool> Monitored {get;set;}=[];
     public Dictionary<string,int> Ports {get;set;}=[];
     public string Sort {get;set;}="Name";
+    public bool ReportingOnly {get;set;}
 }
 public class AppSettings
 {

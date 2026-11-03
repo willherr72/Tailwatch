@@ -10,6 +10,13 @@ internal static class Program
         {
             using var output=Console.OpenStandardOutput();output.Write(System.Text.Encoding.UTF8.GetBytes(unicodeDirectory));return;
         }
+        if(args is ["switch","--list","--json"])
+        {
+            using var output=Console.OpenStandardOutput();output.Write(System.Text.Encoding.UTF8.GetBytes("""[{"id":"a123","nickname":"home","tailnet":"William’s home","account":"same@example.com","selected":true},{"id":"b456","nickname":"work","tailnet":"Work & lab","account":"same@example.com","selected":false}]"""));return;
+        }
+        if(args is ["switch","b456"])return;
+        if(args is ["switch","eeee"]){Environment.ExitCode=1;return;}
+        if(args is ["switch","ffff"]){Thread.Sleep(30000);return;}
         var executable=Environment.GetEnvironmentVariable("TAILWATCH_TAILSCALE");var encoding=Console.OutputEncoding;
         try
         {
@@ -17,6 +24,14 @@ internal static class Program
             Console.OutputEncoding=System.Text.Encoding.Latin1;
             var directory=Tailscale.ReadAsync().GetAwaiter().GetResult();
             if(directory.Self.Name!="William’s Mac mini — café & lab")throw new Exception("UTF-8 machine name was corrupted by the console code page");
+            var accounts=Tailscale.ReadAccountsAsync().GetAwaiter().GetResult();
+            if(accounts.Count!=2||accounts[0].Tailnet!="William’s home"||accounts[1].Id!="b456")throw new Exception("Saved account CLI discovery failed");
+            Tailscale.SwitchAccountAsync("b456").GetAwaiter().GetResult();
+            bool rejected=false;try{Tailscale.SwitchAccountAsync("eeee").GetAwaiter().GetResult();}catch(ProtocolException){rejected=true;}
+            if(!rejected)throw new Exception("Failed account switch was reported as successful");
+            using var cancel=new CancellationTokenSource(200);
+            bool cancelled=false;try{Tailscale.SwitchAccountAsync("ffff",cancel.Token).GetAwaiter().GetResult();}catch(OperationCanceledException){cancelled=true;}
+            if(!cancelled)throw new Exception("Account switch ignored cancellation");
         }
         finally{Console.OutputEncoding=encoding;Environment.SetEnvironmentVariable("TAILWATCH_TAILSCALE",executable);}
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
@@ -35,6 +50,8 @@ internal static class Program
         if(Find(panel).OfType<TextBox>().Count()!=1)throw new Exception("Search missing");
         var list=Find(panel).OfType<FlowLayoutPanel>().Single();
         if(list.Controls.OfType<MachineCard>().Count()!=4)throw new Exception("Machine rows missing");
+        CheckReportingFilter(panel,rows);
+        CheckAccountMenu(panel,rows);
         var card=list.Controls.OfType<MachineCard>().First();
         card.Controls.OfType<Button>().Single().PerformClick();Application.DoEvents();
         if(card.Height<=100)throw new Exception("Details did not expand");
@@ -77,9 +94,51 @@ internal static class Program
             using var menuImage=new Bitmap(sortMenu.Width,sortMenu.Height);sortMenu.DrawToBitmap(menuImage,sortMenu.ClientRectangle);
             menuImage.Save(Path.ChangeExtension(args[0],"menu.png"));sortMenu.Close();
         }
-        Console.WriteLine("Native UI smoke passed: UTF-8 process output, scrollbar drag/keys/wheel, steady 43-machine refresh, search, DPI, offline recovery, close action.");
+        Console.WriteLine("Native UI smoke passed: reporting filter and recovery, account menu and CLI success/failure/cancellation, UTF-8 process output, scrollbar drag/keys/wheel, steady 43-machine refresh, search, DPI, offline recovery, close action.");
     }
     static IEnumerable<Control> Find(Control parent)=>parent.Controls.Cast<Control>().SelectMany(c=>new[]{c}.Concat(Find(c)));
+    static void CheckAccountMenu(TrayPanel panel,List<MachineState> rows)
+    {
+        var button=Find(panel).OfType<Button>().Single(b=>b.AccessibleName=="Switch tailnet");
+        var menu=button.ContextMenuStrip??throw new Exception("Account menu missing");
+        int loads=0;panel.AccountsRequested+=()=>loads++;
+        button.PerformClick();Application.DoEvents();
+        if(loads!=1||!menu.Visible)throw new Exception("Account button did not open and load the menu");
+        var accounts=new[]{new TailscaleAccount("a123","home","William’s home","same@example.com",true),new TailscaleAccount("b456","work","Work & lab","same@example.com",false)};
+        panel.SetAccounts(accounts);Application.DoEvents();
+        var current=(ToolStripMenuItem)menu.Items[0];var other=(ToolStripMenuItem)menu.Items[1];
+        if(!current.Checked||current.Enabled||!other.Enabled||other.Text?.Contains("Work && lab")!=true)throw new Exception("Account menu selection or literal label is wrong");
+        string? selected=null;panel.AccountSwitchRequested+=account=>selected=account.Id;other.PerformClick();
+        if(selected!="b456")throw new Exception("Account menu did not dispatch the saved profile ID");
+        menu.Close();menu.Show(button,new Point(0,button.Height));Application.DoEvents();
+        if(loads!=2||menu.Items.OfType<ToolStripMenuItem>().Any(i=>i.Checked))throw new Exception("Context-menu opening reused stale accounts instead of refreshing");
+        panel.SetAccounts([accounts[0] with {Selected=false},accounts[1] with {Selected=true}]);
+        if(!((ToolStripMenuItem)menu.Items[0]).Enabled||!((ToolStripMenuItem)menu.Items[1]).Checked)throw new Exception("Reopened account menu cannot switch back");
+        menu.Close();panel.Show();panel.Activate();Application.DoEvents();
+        panel.SetSwitching("Work & lab");panel.UpdateMachines("",[],"Switching tailnet…");Application.DoEvents();
+        if(button.Enabled||Find(panel).OfType<MachineCard>().Any(c=>c.Visible))throw new Exception("Switching kept stale rows or allowed duplicate switching");
+        panel.SetSwitching(null);panel.UpdateMachines("Tailscale disconnected",[],"Disconnected");Application.DoEvents();
+        if(!button.Enabled)throw new Exception("Disconnected users cannot switch accounts");
+        panel.SetAccounts(null,"Accounts unavailable");
+        if(menu.Items.OfType<ToolStripMenuItem>().Count(i=>i.Enabled)!=1)throw new Exception("Account list failure lost the Tailscale management action");
+        panel.UpdateMachines("Sample tailnet",rows,null);Application.DoEvents();
+    }
+    static void CheckReportingFilter(TrayPanel panel,List<MachineState> original)
+    {
+        var toggle=Find(panel).OfType<Button>().SingleOrDefault(b=>b.AccessibleName=="Reporting only")??throw new Exception("Reporting filter missing");
+        var list=Find(panel).OfType<FlowLayoutPanel>().Single();
+        var unavailable=new MachineState(new("unavailable","No agent","linux",[IPAddress.Parse("100.64.0.5")],true),true,"Agent unavailable");
+        var fleet=original.Append(unavailable).ToList();panel.UpdateMachines("Sample tailnet",fleet,null);
+        toggle.PerformClick();Application.DoEvents();
+        if(list.Controls.OfType<MachineCard>().Count(c=>c.Visible)!=3)throw new Exception("Reporting filter kept offline or unavailable machines");
+        panel.UpdateMachines("Sample tailnet",fleet.Select(m=>m.Peer.Id=="a"?m with {Status="Stale"}:m).ToList(),null);Application.DoEvents();
+        if(list.Controls.OfType<MachineCard>().Count(c=>c.Visible)!=2)throw new Exception("Reporting filter kept stale readings");
+        panel.UpdateMachines("Sample tailnet",fleet,null);Application.DoEvents();
+        if(list.Controls.OfType<MachineCard>().Count(c=>c.Visible)!=3)throw new Exception("Recovered machine did not reappear");
+        toggle.PerformClick();Application.DoEvents();
+        if(list.Controls.OfType<MachineCard>().Count(c=>c.Visible)!=5)throw new Exception("Filter did not restore hidden machines");
+        panel.UpdateMachines("Sample tailnet",original,null);
+    }
     static void CheckStableRefresh(TrayPanel panel,List<MachineState> original)
     {
         var fleet=original.Concat(Enumerable.Range(1,39).Select(i=>original[0] with {Peer=original[0].Peer with {Id="extra-"+i,Name=$"Worker {i:00}"}})).ToList();
