@@ -32,7 +32,8 @@ public static class Tailscale
         {
             using var doc=JsonDocument.Parse(json);
             var r=doc.RootElement;
-            if(Text(r,"BackendState")!="Running") throw new ProtocolException("Connect Tailscale to see your machines.");
+            var state=Text(r,"BackendState");
+            if(state!="Running") throw new ProtocolException("Connect Tailscale to see your machines.",state is "Stopped" or "NeedsLogin" or "NeedsMachineAuth" or "NoState" or "Starting");
             var self=ParsePeer(r.GetProperty("Self"),true);
             if(self.Id.Length==0 || self.Addresses.Count==0) throw new ProtocolException("Tailscale has no usable local identity.");
             var tailnet=r.GetProperty("CurrentTailnet");

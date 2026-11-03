@@ -19,6 +19,8 @@ Settings and a bounded diagnostic log live in `%LOCALAPPDATA%\Tailwatch`. Machin
 
 Tailwatch follows the **currently active account** in the installed Tailscale client. Switching accounts in Tailscale clears old readings and starts monitoring the newly visible machines. In-flight responses from the old network are discarded. Saved preferences return when you switch back.
 
+A temporary discovery error keeps the last known machine list and expanded rows visible, pauses new requests, and lets cached readings expire. An explicitly disconnected account clears the list. Discovery runs independently of slow remote requests.
+
 The ordinary Tailscale client connects to one account at a time. This version does not show several separate tailnets simultaneously and does not switch accounts for you. Simultaneous aggregation would need separate network clients or a collector in each tailnet.
 
 An agent's remote configuration is tied to the node identity active when it was configured. If that machine switches to another tailnet, remote serving stops until the configured identity returns. Re-enrollment with a new node ID requires new configuration. The viewer's local-only helper follows its active local identity.
@@ -30,6 +32,8 @@ Devices are discovered through Tailscale. Desktop/server peers are monitored by 
 A reachable Tailscale device without a usable Tailwatch endpoint displays **Agent unavailable**, with dashes for metrics. This can also mean the agent is stopped or a firewall blocks the port. It does not block other devices. Use **Machines** to disable devices you do not want to monitor.
 
 Other states include **Offline**, **Access denied**, **Connecting**, **Stale**, and **Incompatible agent version**. Unknown or unsupported metrics are never displayed as measured zero. Failed peers back off for 30 seconds; **Refresh** retries immediately.
+
+The agent's explicit startup response gets a ten-second grace period. Other failed responses, including unrelated services on the same port, back off normally.
 
 ## Install remote agents
 
@@ -109,6 +113,7 @@ If your tailnet policy blocks the connection, a narrow grant can permit it. Adap
 - **RAM:** OS-aware used physical memory divided by total memory. OS accounting differs; this is not memory pressure.
 - **GPU:** GPU active time. For multiple GPUs the row shows the busiest available GPU; expanded details list each device. An asterisk marks partial readings.
 - **NVIDIA memory:** dedicated video memory used/total, separate from GPU activity.
+- **NVIDIA recovery:** transient NVML session failures trigger one fresh-session retry per sample. Failed driver initialization backs off for 30 seconds; unreadable counters remain unavailable.
 - **Apple silicon:** GPU active residency from macmon's IOReport access. CPU and GPU share system memory, so no separate VRAM capacity is invented.
 - **AMD:** CPU/RAM monitoring works; GPU collection is not implemented in this version.
 
@@ -143,6 +148,8 @@ dotnet run --project tests/Tailwatch.UiSmoke
 ```
 
 The last command is Windows-only and checks native row rendering, expanding, searching, and sorting. GitHub Actions builds Windows x64, Linux x64, and macOS arm64 agents plus the Windows viewer. Download matching artifacts from a successful workflow run and put the Windows agent next to the viewer.
+
+With Tailscale connected and a local agent listening, `dotnet run --project tests/Tailwatch.LocalSmoke` verifies real discovery and CPU/RAM readings across the Rust/C# boundary. See [validation notes](docs/validation.md) for executed checks and hardware limitations.
 
 The protocol example in `protocol/snapshot.example.json` contains fictional values. Private configuration, machine inventories, build outputs, and local test captures are excluded from Git.
 

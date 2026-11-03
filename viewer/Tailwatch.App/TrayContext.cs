@@ -69,16 +69,23 @@ internal sealed class TrayContext : ApplicationContext
             monitor.SetDirectory(directory);
             if(changed)panel.SetSort(settings.For(directory.Key).Sort);
             UpdatePanel();
-            await monitor.PollAsync(force,lifetime.Token);
-            UpdatePanel();
+            // Discovery must keep running even while remote peers are timing out.
+            _=PollAndRenderAsync(force);
         }
         catch(OperationCanceledException)when(lifetime.IsCancellationRequested){}
         catch(Exception e)when(e is IOException or ProtocolException or OperationCanceledException or System.ComponentModel.Win32Exception)
         {
-            monitor.Disconnect(e is ProtocolException?e.Message:"Tailscale is unavailable. Check that it is running.");
+            var message=e is ProtocolException?e.Message:"Tailscale is unavailable. Check that it is running.";
+            if(e is ProtocolException {Disconnected:true})monitor.Disconnect(message);
+            else monitor.DiscoveryFailed(message);
             UpdatePanel();
         }
         finally{busy=false;next=DateTime.UtcNow.AddSeconds(panel.Visible?2:15);}
+    }
+    async Task PollAndRenderAsync(bool force)
+    {
+        try{await monitor.PollAsync(force,lifetime.Token);UpdatePanel();}
+        catch(OperationCanceledException)when(lifetime.IsCancellationRequested){}
     }
     async Task StartLocalAgentAsync()
     {

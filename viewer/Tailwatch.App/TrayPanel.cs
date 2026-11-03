@@ -39,7 +39,7 @@ internal sealed class TrayPanel : Form
     public void UpdateMachines(string network,IReadOnlyList<MachineState> values,string? error)
     {
         machines=values;
-        subtitle.Text=string.IsNullOrEmpty(network)?"Connecting to Tailscale…":network+"  ·  active tailnet";
+        subtitle.Text=string.IsNullOrEmpty(network)?"Connecting to Tailscale…":network+(error==null?"  ·  active tailnet":"  ·  last known tailnet");
         summary.Text=error??$"{values.Count(m=>m.Peer.Online)} online  ·  {values.Count(m=>!m.Peer.Online)} offline  ·  {values.Count(m=>m.Status=="Live")} reporting";
         footer.Text=error!=null?"Connection unavailable":"Updates every 2s while open";RenderRows();
     }

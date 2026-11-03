@@ -1,0 +1,10 @@
+using Tailwatch.Core;
+var directory=await Tailscale.ReadAsync();
+using var client=new HttpClient(new SocketsHttpHandler{UseProxy=false,AllowAutoRedirect=false}){Timeout=TimeSpan.FromSeconds(3)};
+using var monitor=new TailwatchMonitor(client,new AppSettings());
+monitor.SetDirectory(directory with {Peers=[directory.Self]});
+await monitor.PollAsync(true);
+var row=monitor.Machines.Single();
+if(row.Status!="Live" || row.Cpu==null || row.Ram==null)throw new Exception("No fresh local agent metrics: "+row.Status);
+if(row.Snapshot?.SchemaVersion!=1)throw new Exception("Unexpected protocol");
+Console.WriteLine($"Live Rust-to-C# check passed: CPU/RAM fresh, {row.Snapshot.Gpus.Count} GPU(s), GPU status {row.Snapshot.GpuStatus}.");

@@ -206,10 +206,38 @@ pub fn start(cache: Cache, node_id: String) {
 struct NvidiaCollector {
     nvml: Option<nvml_wrapper::Nvml>,
     last_nvml_attempt: Instant,
+    reconnect: bool,
+}
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn transient_nvml_error(error: &nvml_wrapper::error::NvmlError) -> bool {
+    use nvml_wrapper::error::NvmlError;
+    matches!(
+        error,
+        NvmlError::Unknown
+            | NvmlError::Uninitialized
+            | NvmlError::GpuLost
+            | NvmlError::DriverNotLoaded
+            | NvmlError::ResetRequired
+    )
 }
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 impl NvidiaCollector {
     fn gpus(&mut self) -> (Vec<GpuReading>, String) {
+        self.reconnect = false;
+        let result = self.collect_gpus();
+        if self.reconnect && self.nvml.is_some() {
+            // Drop/shutdown the old NVML session before opening a fresh one. Some
+            // laptop drivers leave a session returning Unknown after a power transition.
+            // Retry at most once per two-second sample; failed initialization backs off.
+            self.nvml = None;
+            self.nvml = nvml_wrapper::Nvml::init().ok();
+            self.last_nvml_attempt = Instant::now();
+            self.reconnect = false;
+            return self.collect_gpus();
+        }
+        result
+    }
+    fn collect_gpus(&mut self) -> (Vec<GpuReading>, String) {
         if self.nvml.is_none() && self.last_nvml_attempt.elapsed() >= Duration::from_secs(30) {
             self.nvml = nvml_wrapper::Nvml::init().ok();
             self.last_nvml_attempt = Instant::now();
@@ -219,23 +247,37 @@ impl NvidiaCollector {
         };
         let count = match nvml.device_count() {
             Ok(n) => n,
-            Err(_) => return (vec![], "collection_failed".into()),
+            Err(e) => {
+                self.reconnect |= transient_nvml_error(&e);
+                return (vec![], "collection_failed".into());
+            }
         };
         let mut gpus = vec![];
         let mut partial = false;
         for index in 0..count.min(64) {
-            let Ok(device) = nvml.device_by_index(index) else {
-                partial = true;
-                continue;
+            let device = match nvml.device_by_index(index) {
+                Ok(device) => device,
+                Err(e) => {
+                    self.reconnect |= transient_nvml_error(&e);
+                    partial = true;
+                    continue;
+                }
             };
-            let Ok(id) = device.uuid() else {
-                partial = true;
-                continue;
+            let id = match device.uuid() {
+                Ok(id) => id,
+                Err(e) => {
+                    self.reconnect |= transient_nvml_error(&e);
+                    partial = true;
+                    continue;
+                }
             };
             let utilization = device
                 .utilization_rates()
                 .map(|u| Reading::measured(u.gpu as f64))
-                .unwrap_or_else(|_| Reading::unavailable("unsupported_or_collection_failed"));
+                .unwrap_or_else(|e| {
+                    self.reconnect |= transient_nvml_error(&e);
+                    Reading::unavailable(&format!("nvml_{e:?}"))
+                });
             let memory = device.memory_info().ok().map(|m| MemoryReading {
                 used_bytes: Some(m.used),
                 total_bytes: Some(m.total),
@@ -276,6 +318,7 @@ fn start_nvidia_gpu() -> GpuCache {
         let mut collector = NvidiaCollector {
             nvml: nvml_wrapper::Nvml::init().ok(),
             last_nvml_attempt: Instant::now(),
+            reconnect: false,
         };
         loop {
             let started = Instant::now();

@@ -34,7 +34,10 @@ public record Snapshot
     [JsonIgnore] public double? GpuPercent => Gpus.Where(g=>g.Utilization.IsFresh).Select(g=>g.Utilization.Value).DefaultIfEmpty(null).Max();
     [JsonIgnore] public bool PartialGpu => GpuPercent != null && (GpuStatus == "partial" || Gpus.Any(g=>!g.Utilization.IsFresh));
 }
-public class ProtocolException(string message) : Exception(message);
+public class ProtocolException(string message,bool disconnected=false) : Exception(message)
+{
+    public bool Disconnected {get;}=disconnected;
+}
 public static class Protocol
 {
     public static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower, PropertyNameCaseInsensitive = true, WriteIndented = true, MaxDepth = 32 };
