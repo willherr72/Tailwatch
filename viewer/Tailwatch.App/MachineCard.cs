@@ -39,13 +39,13 @@ internal sealed class MachineCard : UserControl
         this.state=state;DoubleBuffered=true;BackColor=Theme.Background;ForeColor=Theme.Text;
         Margin=new Padding(0);Padding=new Padding(0,9,0,8);Height=88;
         title=new Button{FlatStyle=FlatStyle.Flat,TextAlign=ContentAlignment.MiddleLeft,ForeColor=Theme.Text,BackColor=Theme.Background,
-            Font=new Font("Segoe UI",9.5f,FontStyle.Bold),Location=new Point(0,6),Height=27,Width=290,Cursor=Cursors.Hand,AutoEllipsis=true};
+            Font=new Font("Segoe UI",9.5f,FontStyle.Bold),Location=new Point(0,6),Height=27,Width=290,Cursor=Cursors.Hand,AutoEllipsis=true,UseMnemonic=false};
         title.FlatAppearance.BorderSize=0;title.Click+=(_,_)=>{expanded=!expanded;UpdateDetails();};
         status=new Label{TextAlign=ContentAlignment.MiddleRight,ForeColor=Theme.Muted,Location=new Point(290,12),Size=new Size(160,18),AutoEllipsis=true};
         meters=new TableLayoutPanel{ColumnCount=3,RowCount=1,Location=new Point(4,43),Height=40,Anchor=AnchorStyles.Left|AnchorStyles.Top|AnchorStyles.Right};
         for(int i=0;i<3;i++)meters.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,33.333f));
         foreach(var meter in new[]{cpu,gpu,ram}){meter.Dock=DockStyle.Fill;meter.Margin=new Padding(0,0,16,0);meters.Controls.Add(meter);}
-        detail=new Label{ForeColor=Theme.Muted,BackColor=Theme.Card,Padding=new Padding(10),Location=new Point(4,91),AutoSize=false,Visible=false};
+        detail=new Label{ForeColor=Theme.Muted,BackColor=Theme.Card,Padding=new Padding(10),Location=new Point(4,91),AutoSize=false,Visible=false,UseMnemonic=false};
         Controls.AddRange([title,status,meters,detail]);
         Resize+=(_,_)=>LayoutChildren();
         UpdateState(state);

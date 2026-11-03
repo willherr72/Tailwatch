@@ -5,6 +5,20 @@ internal static class Program
 {
     [STAThread] static void Main(string[] args)
     {
+        const string unicodeDirectory="""{"BackendState":"Running","CurrentTailnet":{"Name":"Test tailnet","MagicDNSSuffix":"test.ts.net"},"Self":{"ID":"test-self","HostName":"William’s Mac mini — café & lab","OS":"macOS","TailscaleIPs":["100.64.0.1"]}}""";
+        if(args is ["status","--json"])
+        {
+            using var output=Console.OpenStandardOutput();output.Write(System.Text.Encoding.UTF8.GetBytes(unicodeDirectory));return;
+        }
+        var executable=Environment.GetEnvironmentVariable("TAILWATCH_TAILSCALE");var encoding=Console.OutputEncoding;
+        try
+        {
+            Environment.SetEnvironmentVariable("TAILWATCH_TAILSCALE",Environment.ProcessPath);
+            Console.OutputEncoding=System.Text.Encoding.Latin1;
+            var directory=Tailscale.ReadAsync().GetAwaiter().GetResult();
+            if(directory.Self.Name!="William’s Mac mini — café & lab")throw new Exception("UTF-8 machine name was corrupted by the console code page");
+        }
+        finally{Console.OutputEncoding=encoding;Environment.SetEnvironmentVariable("TAILWATCH_TAILSCALE",executable);}
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         using var panel=new TrayPanel();
@@ -18,14 +32,14 @@ internal static class Program
         rows.Add(new(new("d","Build server","linux",[IPAddress.Parse("100.64.0.4")],false),true,"Offline"));
         panel.UpdateMachines("Sample tailnet",rows,null);
         panel.StartPosition=FormStartPosition.Manual;panel.Location=args.Contains("--capture-screen")?new Point(40,40):new Point(-2000,-2000);panel.Show();Application.DoEvents();
-        if(panel.Controls.OfType<TextBox>().Count()!=1)throw new Exception("Search missing");
-        var list=panel.Controls.OfType<FlowLayoutPanel>().Single();
+        if(Find(panel).OfType<TextBox>().Count()!=1)throw new Exception("Search missing");
+        var list=Find(panel).OfType<FlowLayoutPanel>().Single();
         if(list.Controls.OfType<MachineCard>().Count()!=4)throw new Exception("Machine rows missing");
         var card=list.Controls.OfType<MachineCard>().First();
         card.Controls.OfType<Button>().Single().PerformClick();Application.DoEvents();
         if(card.Height<=100)throw new Exception("Details did not expand");
         card.Controls.OfType<Button>().Single().PerformClick();
-        var search=panel.Controls.OfType<TextBox>().Single();
+        var search=Find(panel).OfType<TextBox>().Single();
         search.Text="Mac";Application.DoEvents();
         if(list.Controls.OfType<MachineCard>().Count(c=>c.Visible)!=1)throw new Exception("Search filter failed");
         search.Text="";panel.SetSort("GPU");Application.DoEvents();
@@ -63,14 +77,29 @@ internal static class Program
             using var menuImage=new Bitmap(sortMenu.Width,sortMenu.Height);sortMenu.DrawToBitmap(menuImage,sortMenu.ClientRectangle);
             menuImage.Save(Path.ChangeExtension(args[0],"menu.png"));sortMenu.Close();
         }
-        Console.WriteLine("Native UI smoke passed: steady 43-machine refresh, scroll/details, search, sort, DPI, offline recovery, close action.");
+        Console.WriteLine("Native UI smoke passed: UTF-8 process output, scrollbar drag/keys/wheel, steady 43-machine refresh, search, DPI, offline recovery, close action.");
     }
     static IEnumerable<Control> Find(Control parent)=>parent.Controls.Cast<Control>().SelectMany(c=>new[]{c}.Concat(Find(c)));
     static void CheckStableRefresh(TrayPanel panel,List<MachineState> original)
     {
         var fleet=original.Concat(Enumerable.Range(1,39).Select(i=>original[0] with {Peer=original[0].Peer with {Id="extra-"+i,Name=$"Worker {i:00}"}})).ToList();
-        var list=panel.Controls.OfType<FlowLayoutPanel>().Single();
+        var list=Find(panel).OfType<FlowLayoutPanel>().Single();
         var sort=panel.SortValue;panel.SetSort("Name");panel.UpdateMachines("Sample tailnet",fleet,null);Application.DoEvents();
+        var scrollbar=Find(panel).SingleOrDefault(c=>c.AccessibleName=="Machine list scrollbar")??throw new Exception("Themed machine scrollbar missing");
+        Input(scrollbar,"OnKeyDown",new KeyEventArgs(Keys.End));Application.DoEvents();
+        if(list.AutoScrollPosition.Y>=0)throw new Exception("Scrollbar End did not scroll");
+        Input(scrollbar,"OnKeyDown",new KeyEventArgs(Keys.Home));Application.DoEvents();
+        if(list.AutoScrollPosition.Y!=0)throw new Exception("Scrollbar Home did not return to top");
+        Input(scrollbar,"OnKeyDown",new KeyEventArgs(Keys.PageDown));Application.DoEvents();
+        if(list.AutoScrollPosition.Y>=0)throw new Exception("Scrollbar PageDown did not scroll");
+        Input(scrollbar,"OnKeyDown",new KeyEventArgs(Keys.Home));
+        Input(scrollbar,"OnMouseDown",new MouseEventArgs(MouseButtons.Left,1,scrollbar.Width/2,8,0));
+        Input(scrollbar,"OnMouseMove",new MouseEventArgs(MouseButtons.Left,0,scrollbar.Width/2,scrollbar.Height/2,0));
+        Input(scrollbar,"OnMouseUp",new MouseEventArgs(MouseButtons.Left,1,scrollbar.Width/2,scrollbar.Height/2,0));Application.DoEvents();
+        if(list.AutoScrollPosition.Y>=0)throw new Exception("Scrollbar thumb drag did not scroll");
+        Input(scrollbar,"OnKeyDown",new KeyEventArgs(Keys.Home));
+        Input(list,"OnMouseWheel",new MouseEventArgs(MouseButtons.None,0,5,5,-120));Application.DoEvents();
+        if(list.AutoScrollPosition.Y>=0)throw new Exception("Native mouse wheel scrolling was lost");
         var existing=list.Controls.OfType<MachineCard>().ToDictionary(c=>c.MachineId);
         var expanded=existing["a"];expanded.Controls.OfType<Button>().Single().PerformClick();Application.DoEvents();
         var expandedHeight=expanded.Height;
@@ -92,6 +121,7 @@ internal static class Program
         finally{foreach(var row in existing.Values)row.VisibleChanged-=changed;}
         panel.UpdateMachines("Sample tailnet",original,null);panel.SetSort(sort);expanded.Controls.OfType<Button>().Single().PerformClick();list.AutoScrollPosition=Point.Empty;
     }
+    static void Input(Control control,string method,EventArgs args)=>control.GetType().GetMethod(method,System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.Invoke(control,[args]);
     static void Capture(Form panel,string path,bool screen)
     {
         panel.Refresh();Application.DoEvents();

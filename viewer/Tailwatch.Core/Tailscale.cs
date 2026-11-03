@@ -54,7 +54,8 @@ public static class Tailscale
     {
         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(2));
-        var info=new ProcessStartInfo(Executable) { UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true };
+        var info=new ProcessStartInfo(Executable) { UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true,
+            StandardOutputEncoding=System.Text.Encoding.UTF8,StandardErrorEncoding=System.Text.Encoding.UTF8 };
         info.ArgumentList.Add("status");info.ArgumentList.Add("--json");
         using var process=Process.Start(info)??throw new IOException("Could not start Tailscale.");
         try
