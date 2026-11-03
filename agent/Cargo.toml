@@ -15,12 +15,15 @@ clap = { version = "4", features = ["derive"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 anyhow = "1"
+tower = { version = "0.5", features = ["util"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 
 [target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
 nvml-wrapper = "0.13"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-macmon = "0.10"
+macmon = { version = "0.10", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"

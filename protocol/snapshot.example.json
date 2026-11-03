@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "agent_version": "0.1.0",
+  "node_id": "example-node",
+  "hostname": "Example machine",
+  "os": "linux",
+  "boot_id": "example-boot",
+  "sequence": 7,
+  "interval_ms": 2000,
+  "age_ms": 0,
+  "cpu": {
+    "value": 0,
+    "status": "ok",
+    "age_ms": 0,
+    "model": "Example CPU",
+    "logical_cores": 8
+  },
+  "ram": {
+    "used_bytes": 8589934592,
+    "total_bytes": 17179869184,
+    "status": "ok",
+    "age_ms": 0,
+    "source": "OS memory accounting"
+  },
+  "gpus": [
+    {
+      "id": "example-gpu",
+      "name": "Example NVIDIA GPU",
+      "vendor": "NVIDIA",
+      "utilization": {
+        "value": 25,
+        "status": "ok",
+        "age_ms": 0
+      },
+      "metric": "active_time",
+      "memory": {
+        "used_bytes": 4294967296,
+        "total_bytes": 12884901888,
+        "status": "ok",
+        "age_ms": 0,
+        "source": "NVML"
+      }
+    }
+  ],
+  "gpu_status": "ok"
+}
