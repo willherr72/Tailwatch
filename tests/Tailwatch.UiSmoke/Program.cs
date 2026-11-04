@@ -36,6 +36,7 @@ internal static class Program
         finally{Console.OutputEncoding=encoding;Environment.SetEnvironmentVariable("TAILWATCH_TAILSCALE",executable);}
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
+        CheckTrayPlacement();
         CheckAgentSetup(args.Length>0?Path.ChangeExtension(args[0],"setup.png"):null);
         using var panel=new TrayPanel();
         var rows=new List<MachineState>();
@@ -99,7 +100,31 @@ internal static class Program
             using var menuImage=new Bitmap(sortMenu.Width,sortMenu.Height);sortMenu.DrawToBitmap(menuImage,sortMenu.ClientRectangle);
             menuImage.Save(Path.ChangeExtension(args[0],"menu.png"));sortMenu.Close();
         }
-        Console.WriteLine("Native UI smoke passed: setup/platform and stale-address protection, expanded history graphs, reporting filter and recovery, account menu and CLI success/failure/cancellation, UTF-8 process output, scrollbar drag/keys/wheel, steady 43-machine refresh, search, DPI, offline recovery, close action.");
+        Console.WriteLine("Native UI smoke passed: first and repeated tray placement, setup/platform and stale-address protection, expanded history graphs, reporting filter and recovery, account menu and CLI success/failure/cancellation, UTF-8 process output, scrollbar drag/keys/wheel, steady 43-machine refresh, search, DPI, offline recovery, close action.");
+    }
+    static void CheckTrayPlacement()
+    {
+        var cursor=Cursor.Position;
+        try
+        {
+            foreach(var screen in Screen.AllScreens)
+            {
+                var work=screen.WorkingArea;
+                Cursor.Position=new Point(work.Right-1,work.Bottom-1);
+                using var panel=new TrayPanel();
+                for(int opening=1;opening<=2;opening++)
+                {
+                    panel.ShowNearTray();Application.DoEvents();
+                    bool horizontal=panel.Width+12<=work.Width?work.Right-panel.Right==12:panel.Left==work.Left;
+                    bool vertical=panel.Height+12<=work.Height?work.Bottom-panel.Bottom==12:panel.Top==work.Top;
+                    if(!panel.Visible||panel.Left<work.Left||panel.Top<work.Top||
+                        !horizontal||!vertical)
+                        throw new Exception($"Tray opening {opening} on {screen.DeviceName}: expected bottom-right placement with 12px margin, clamped to work area; panel={panel.Bounds}, work={work}");
+                    panel.Hide();
+                }
+            }
+        }
+        finally{Cursor.Position=cursor;}
     }
     static IEnumerable<Control> Find(Control parent)=>parent.Controls.Cast<Control>().SelectMany(c=>new[]{c}.Concat(Find(c)));
     static void CheckAgentSetup(string? capture)

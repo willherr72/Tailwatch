@@ -29,6 +29,7 @@ internal sealed class TrayPanel : Form
     {
         SuspendLayout();
         Text="Tailwatch";Name="TailwatchPanel";ShowInTaskbar=false;FormBorderStyle=FormBorderStyle.None;
+        StartPosition=FormStartPosition.Manual;
         MaximizeBox=false;MinimizeBox=false;ControlBox=false;TopMost=true;KeyPreview=true;
         BackColor=Theme.Background;ForeColor=Theme.Text;Font=new Font("Segoe UI",9f);
         AutoScaleDimensions=new SizeF(96,96);AutoScaleMode=AutoScaleMode.Dpi;ClientSize=new Size(520,560);
