@@ -17,7 +17,15 @@ Executed on Windows:
 - A 61-second synthetic-identity run exercised the read-only soak recorder: 30 observations, 29 fresh, one startup-unavailable observation, no agent restarts, and maximum gap 2.76 seconds. This is a recorder smoke check, not the multi-hour acceptance run.
 - Packaging's 17 tests and the draft-workflow's 20 tests passed. The expanded packaged-viewer crash-recovery check is wired into isolated Windows CI; that hosted check has not yet run for this branch.
 
-The new cross-platform Rust changes still require Linux/macOS CI execution. Installed-app validation is recorded after deployment; no public reliability release has been published.
+Installed Windows validation of implementation commit `f1a1039`:
+
+- Replaced viewer and local agent together and verified both installed file hashes against the build. The existing startup entry still points to the installed viewer.
+- Killed the viewer-owned local agent alone. The viewer remained running and restored fresh CPU/RAM/GPU readings in 5.33 seconds, with exactly one replacement local agent.
+- Exercised the installed tray's Quit action repeatedly. The observed native exit code was 0; process-handle waits confirmed both the owned agent and GPU worker exited. An initial immediate process-list check raced descendant exit, so the final check waits for each recorded child handle rather than treating a transient process-list entry as an orphan.
+- No new viewer crash event was found during the updated-app quit checks. The old build reproduced its disposal crash when it was quit for replacement; that event predates the new installation.
+- Started a two-hour read-only observation at 2026-11-04 20:18 UTC. Evidence is under the worktree's ignored `dist/reliability/`, with its process ID and file paths in `installed-soak-run.json`. The run is pending; it is not yet a passed acceptance check.
+
+The new cross-platform Rust changes still require Linux/macOS CI execution. No public reliability release has been published.
 
 Physical sleep/wake, reboot/sign-in, and a multi-hour soak remain required before claiming those lifecycle paths reliable. Short automated tests do not substitute for these checks.
 

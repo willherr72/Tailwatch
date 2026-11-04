@@ -58,10 +58,12 @@ Files: focused lifecycle harness or additions to `tests/Tailwatch.UiSmoke/`, `do
 
 - [ ] Run all viewer, native UI, Rust, packaging and workflow checks. Build both executable files together.
 - [x] Review the whole change independently and address findings.
-- [ ] Verify a real worker crash/hang preserves CPU/RAM, a local agent exit recovers, and repeated quit produces no new crash events.
-- [ ] Install the verified viewer and agent together, restore monitoring, and verify live readings and startup configuration.
-- [ ] Record actual results and pending multi-hour soak/physical sleep-wake checks. Do not claim release readiness from unit tests alone.
+- [x] Verify a real worker crash/hang preserves CPU/RAM, a local agent exit recovers, and repeated quit produces no new crash events.
+- [x] Install the verified viewer and agent together, restore monitoring, and verify live readings and startup configuration.
+- [x] Record actual results and pending multi-hour soak/physical sleep-wake checks. Do not claim release readiness from unit tests alone.
 
 ## Execution notes
 
 User approval: the user accepted the five-part reliability proposal with “Lets do it.” Work continues within that scope without another permission gate. Existing T3 worktree is retained; branch `fix/reliability` starts from current `origin/main`.
+
+Implemented in `f1a1039`; all local checks passed. Installed local-agent crash recovery measured 5.33 seconds, clean Quit exit code 0, owned children reaped, startup unchanged. Cross-platform CI and the two-hour observation started at 20:18 UTC remain pending. Physical sleep/wake and reboot checks are not claimed.
