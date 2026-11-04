@@ -5,6 +5,36 @@ using Xunit;
 namespace Tailwatch.Tests;
 public class RecoveryTests
 {
+    [Fact] public async Task RepeatedDisposeCancelsPendingWorkAndRejectsLateResponses()
+    {
+        var started=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var response=new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var client=new HttpClient(new MonitorTests.Handler((_,_)=>{started.TrySetResult();return response.Task;}));
+        var monitor=new TailwatchMonitor(client,new());monitor.SetDirectory(MonitorTests.Directory());
+        var poll=monitor.PollAsync();await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        monitor.Dispose();monitor.Dispose();
+        response.SetResult(MonitorTests.Reply(MonitorTests.Sample()));await poll;
+        await monitor.PollAsync(true);monitor.SetDirectory(MonitorTests.Directory("late"));
+        Assert.DoesNotContain(monitor.Machines,m=>m.Status=="Live");
+    }
+    [Theory] [InlineData("denied","Access denied")] [InlineData("refused","Could not connect to agent")] [InlineData("timeout","Agent request timed out")]
+    public async Task CachedSnapshotPreservesFailureReasonAndRecoveryClearsIt(string failure,string expected)
+    {
+        bool fail=false;
+        using var client=new HttpClient(new MonitorTests.Handler(async(_,token)=>
+        {
+            if(!fail)return MonitorTests.Reply(MonitorTests.Sample());
+            if(failure=="denied")return new(HttpStatusCode.Forbidden);
+            if(failure=="refused")throw new HttpRequestException("refused");
+            await Task.Delay(Timeout.Infinite,token);throw new Exception("unreachable");
+        }));
+        using var monitor=new TailwatchMonitor(client,new());monitor.SetDirectory(MonitorTests.Directory());
+        await monitor.PollAsync();var success=monitor.Machines[0].LastSuccess;
+        fail=true;await monitor.PollAsync(true);var row=monitor.Machines[0];
+        Assert.Equal("Stale",row.Status);Assert.Null(row.Cpu);Assert.Equal(success,row.LastSuccess);
+        Assert.Equal(expected,row.FailureReason);
+        fail=false;await monitor.PollAsync(true);Assert.Equal("Live",monitor.Machines[0].Status);Assert.Null(monitor.Machines[0].FailureReason);
+    }
     sealed class Clock:TimeProvider
     {
         public long Ticks=1;
@@ -32,8 +62,10 @@ public class RecoveryTests
         monitor.SetDirectory(MonitorTests.Directory());await monitor.PollAsync();
         clock.Ticks+=11000;await monitor.PollAsync(true);
         Assert.Equal("Stale",monitor.Machines[0].Status);
+        Assert.Equal("Agent sample sequence stopped advancing",monitor.Machines[0].FailureReason);
         s=s with {BootId="new-boot"};await monitor.PollAsync(true);
         Assert.Equal("Live",monitor.Machines[0].Status);
+        Assert.Null(monitor.Machines[0].FailureReason);
     }
     [Fact] public void CustomPortsPersistWithProfile()
     {

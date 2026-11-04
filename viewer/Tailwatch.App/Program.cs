@@ -16,14 +16,16 @@ internal static class Program
 }
 internal static class Log
 {
+    static readonly object Sync=new();
     public static readonly string Folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Tailwatch");
     public static void Write(string message)
     {
-        try
+        lock(Sync)try
         {
             Directory.CreateDirectory(Folder);var path=Path.Combine(Folder,"tailwatch.log");
             if(File.Exists(path)&&new FileInfo(path).Length>262144)File.Move(path,path+".previous",true);
-            File.AppendAllText(path,DateTimeOffset.Now.ToString("O")+" "+message.Replace('\n',' ').Replace('\r',' ')+Environment.NewLine);
+            var bounded=message.Length>2048?message[..2048]+"…":message;
+            File.AppendAllText(path,DateTimeOffset.Now.ToString("O")+" "+bounded.Replace('\n',' ').Replace('\r',' ')+Environment.NewLine);
         }
         catch(Exception e)when(e is IOException or UnauthorizedAccessException){}
     }

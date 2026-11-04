@@ -166,3 +166,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./tests/package-viewer-smoke.ps1 -PackageDirectory unpacked -TailscaleFixturePath fixture/Tailwatch.UiSmoke.exe
+      - name: Verify GPU worker crash, hang, and parent-exit containment
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/reliability-agent-smoke.ps1 -AgentPath unpacked/tailwatch-agent.exe -TailscaleFixturePath fixture/Tailwatch.UiSmoke.exe

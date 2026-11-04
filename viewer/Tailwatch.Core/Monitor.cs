@@ -1,6 +1,6 @@
 using System.Net;
 namespace Tailwatch.Core;
-public record MachineState(Peer Peer,bool Monitored,string Status,Snapshot? Snapshot=null,DateTimeOffset? LastSuccess=null,double? Cpu=null,double? Gpu=null,double? Ram=null,bool PartialGpu=false,IReadOnlyList<HistoryPoint>? History=null);
+public record MachineState(Peer Peer,bool Monitored,string Status,Snapshot? Snapshot=null,DateTimeOffset? LastSuccess=null,double? Cpu=null,double? Gpu=null,double? Ram=null,bool PartialGpu=false,IReadOnlyList<HistoryPoint>? History=null,string? FailureReason=null);
 public sealed class TailwatchMonitor : IDisposable
 {
     sealed class Entry(Peer peer,bool monitored,TimeProvider clock)
@@ -10,6 +10,7 @@ public sealed class TailwatchMonitor : IDisposable
         public string Status=peer.Online?"Connecting":"Offline";
         public Snapshot? Snapshot;
         public DateTimeOffset? LastSuccess;
+        public string? FailureReason;
         public long Received,UnchangedSince,LastAttempt;
         public long? WarmupStarted;
         public bool Attempted,Backoff,InFlight;
@@ -25,6 +26,7 @@ public sealed class TailwatchMonitor : IDisposable
     int generation;
     string key="",name="";
     string? error;
+    bool disposed;
     public TailwatchMonitor(HttpClient client,AppSettings settings,TimeProvider? clock=null)
     {this.client=client;this.settings=settings;this.clock=clock??TimeProvider.System;}
     public string NetworkName {get{lock(sync)return name;}}
@@ -48,7 +50,8 @@ public sealed class TailwatchMonitor : IDisposable
         return new(e.Peer,e.Monitored,status,display,e.LastSuccess,
             live&&Fresh(s!.Cpu)?s.Cpu.Value:null,gpu,
             live&&s!.Ram.AgeMs+elapsed<=10000?s.Ram.Percentage:null,
-            gpu!=null&&(s!.GpuStatus=="partial"||gpus.Count!=s.Gpus.Count),e.History.Read());
+            gpu!=null&&(s!.GpuStatus=="partial"||gpus.Count!=s.Gpus.Count),e.History.Read(),
+            e.FailureReason??(status=="Stale"?"No fresh agent samples":null));
     }
     void NewScope(bool clear=true)
     {
@@ -59,6 +62,7 @@ public sealed class TailwatchMonitor : IDisposable
     {
         lock(sync)
         {
+            if(disposed)return;
             if(key!=directory.Key){NewScope();key=directory.Key;}
             name=directory.Name;error=null;
             var profile=settings.For(key);
@@ -70,7 +74,7 @@ public sealed class TailwatchMonitor : IDisposable
                 {
                     bool changed=!current.Peer.Addresses.SequenceEqual(peer.Addresses)||current.Peer.Online!=peer.Online;
                     current.Peer=peer;
-                    if(changed){current.Snapshot=null;current.Status=peer.Online?"Connecting":"Offline";current.Backoff=false;current.History.Gap();}
+                    if(changed){current.Snapshot=null;current.FailureReason=null;current.Status=peer.Online?"Connecting":"Offline";current.Backoff=false;current.History.Gap();}
                 }
                 else
                 {
@@ -82,25 +86,25 @@ public sealed class TailwatchMonitor : IDisposable
     }
     public void Disconnect(string message)
     {
-        lock(sync){NewScope();key="";name="Tailscale disconnected";error=message;}
+        lock(sync){if(disposed)return;NewScope();key="";name="Tailscale disconnected";error=message;}
     }
     public void DiscoveryFailed(string message)
     {
-        lock(sync){NewScope(false);error=message;foreach(var entry in entries.Values)entry.History.Gap();}
+        lock(sync){if(disposed)return;NewScope(false);error=message;foreach(var entry in entries.Values)entry.History.Gap();}
     }
     public void SetMonitored(string id,bool enabled)
     {
-        lock(sync)if(entries.TryGetValue(id,out var e))
+        lock(sync)if(!disposed&&entries.TryGetValue(id,out var e))
         {
             settings.For(key).Monitored[id]=enabled;e.Monitored=enabled;
-            e.Snapshot=null;e.Backoff=false;e.Status=e.Peer.Online?"Connecting":"Offline";
+            e.Snapshot=null;e.FailureReason=null;e.Backoff=false;e.Status=e.Peer.Online?"Connecting":"Offline";
             if(!enabled)e.History.Clear();else e.History.Gap();
         }
     }
     public void SetPort(string id,int port)
     {
         if(port is <1 or >65535)throw new ArgumentOutOfRangeException(nameof(port));
-        lock(sync){settings.For(key).Ports[id]=port;if(entries.TryGetValue(id,out var e)){e.Backoff=false;e.Snapshot=null;e.Status="Connecting";e.History.Gap();}}
+        lock(sync){if(disposed)return;settings.For(key).Ports[id]=port;if(entries.TryGetValue(id,out var e)){e.Backoff=false;e.Snapshot=null;e.FailureReason=null;e.Status="Connecting";e.History.Gap();}}
     }
     public int GetPort(string id) {lock(sync)return settings.For(key).Ports.GetValueOrDefault(id,48173);}
     public Task PollAsync(bool force=false,CancellationToken token=default)
@@ -108,7 +112,7 @@ public sealed class TailwatchMonitor : IDisposable
         var work=new List<Task>();
         lock(sync)
         {
-            if(error!=null||token.IsCancellationRequested)return Task.CompletedTask;
+            if(disposed||error!=null||token.IsCancellationRequested)return Task.CompletedTask;
             // Never queue a fleet behind slow requests. Each tick takes only free slots,
             // prioritizing reporting peers, then peers least recently attempted.
             var due=entries.Values.Where(e=>!e.InFlight&&e.Monitored&&e.Peer.Online&&(force||!e.Backoff||!e.Attempted||Age(e.LastAttempt)>=30000))
@@ -144,7 +148,8 @@ public sealed class TailwatchMonitor : IDisposable
                         if(!Current(peer,port,version,out var e))return;
                         e!.WarmupStarted??=clock.GetTimestamp();
                         bool grace=warming&&Age(e.WarmupStarted.Value)<=10000;
-                        UpdateFailure(peer,port,version,grace?"Connecting":"Agent unavailable",!grace);
+                        var detail=reason switch {"tailscale_unavailable"=>"Agent is waiting for Tailscale", "warming_up"=>"Agent is warming up", "sampler_unavailable"=>"Agent sampler unavailable", _=>"Agent unavailable"};
+                        UpdateFailure(peer,port,version,grace?"Connecting":"Agent unavailable",!grace,detail);
                     }
                     return;
                 }
@@ -158,6 +163,7 @@ public sealed class TailwatchMonitor : IDisposable
                     if(e!.Snapshot==null || e.Snapshot.BootId!=sample.BootId || e.Snapshot.Sequence!=sample.Sequence)e.UnchangedSince=now;
                     e.Snapshot=sample;e.Received=now;e.LastAttempt=now;e.Attempted=true;e.Backoff=false;e.WarmupStarted=null;
                     e.Status=sample.AgeMs>10000||Age(e.UnchangedSince)>10000?"Stale":"Live";
+                    e.FailureReason=e.Status=="Stale"?(sample.AgeMs>10000?"Agent sample is too old":"Agent sample sequence stopped advancing"):null;
                     if(e.Status=="Live")e.LastSuccess=clock.GetUtcNow();
                     var view=View(e);
                     if(e.Status=="Live")e.History.Record(sample.BootId,sample.Sequence,view.Cpu,view.Gpu,view.Ram);
@@ -168,7 +174,8 @@ public sealed class TailwatchMonitor : IDisposable
         catch(Exception ex)when(ex is HttpRequestException or IOException or OperationCanceledException or ProtocolException)
         {
             string status=ex is ProtocolException p?p.Message:"Agent unavailable";
-            UpdateFailure(peer,port,version,status,true);
+            var reason=ex is ProtocolException?status:ex is OperationCanceledException?"Agent request timed out":"Could not connect to agent";
+            UpdateFailure(peer,port,version,status,true,reason);
         }
         finally{lock(sync){entry.InFlight=false;}slots.Release();}
     }
@@ -189,15 +196,16 @@ public sealed class TailwatchMonitor : IDisposable
     bool Current(Peer peer,int port,int version,out Entry? e)
     {
         e=null;
-        return generation==version && entries.TryGetValue(peer.Id,out e) && e.Monitored && e.Peer.Online &&
+        return !disposed && generation==version && entries.TryGetValue(peer.Id,out e) && e.Monitored && e.Peer.Online &&
             e.Peer.Addresses.SequenceEqual(peer.Addresses) && settings.For(key).Ports.GetValueOrDefault(peer.Id,48173)==port;
     }
-    void UpdateFailure(Peer peer,int port,int version,string status,bool backoff)
+    void UpdateFailure(Peer peer,int port,int version,string status,bool backoff,string? reason=null)
     {
         lock(sync)
         {
             if(!Current(peer,port,version,out var e))return;
             e!.Status=e.Snapshot!=null?"Stale":status;
+            e.FailureReason=reason??status;
             e.History.Gap();
             // The loopback helper follows the local Tailscale identity on its own
             // timer. During a switch it can briefly be unavailable or one identity
@@ -205,5 +213,5 @@ public sealed class TailwatchMonitor : IDisposable
             e.Backoff=backoff&&!e.Peer.IsSelf;e.Attempted=true;e.LastAttempt=clock.GetTimestamp();
         }
     }
-    public void Dispose(){lock(sync){scope.Cancel();scope.Dispose();}}
+    public void Dispose(){lock(sync){if(disposed)return;disposed=true;generation++;scope.Cancel();scope.Dispose();}}
 }

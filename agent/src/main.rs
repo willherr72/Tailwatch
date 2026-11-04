@@ -16,6 +16,9 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Action {
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    #[command(hide = true)]
+    GpuWorker,
     /// Collect one local sample and print JSON.
     Sample,
     /// Create configuration for the current Tailscale identity.
@@ -55,6 +58,10 @@ fn load(path: PathBuf) -> Result<Config> {
 }
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    if matches!(cli.command, Action::GpuWorker) {
+        return tailwatch_agent::gpu_worker::run();
+    }
     #[cfg(windows)]
     if let Action::Service { config } = cli.command {
         return service::dispatch(config);
@@ -62,6 +69,8 @@ fn main() -> Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
         match cli.command {
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            Action::GpuWorker => unreachable!(),
             Action::Sample => {
                 let id = network::identity()
                     .await

@@ -21,6 +21,8 @@ For another machine, select it in **Machines → Set up selected machine…**, o
 
 The viewer starts a local-only agent automatically if no agent is listening on port 48173. This child exits when you quit the viewer. Installing a Windows service is needed only if this computer must report to other viewers even when the tray app is closed. Quit the viewer before installing that service.
 
+The viewer supervises the local helper it starts and retries after a crash or an unresponsive endpoint, with a delay between attempts. It does not restart or stop an independently installed service. NVIDIA collection runs in a separate worker process: a GPU-library crash or timeout makes GPU readings unavailable while CPU/RAM monitoring continues. Expanded machine details retain the last successful reading time and the reason new readings are unavailable.
+
 Settings and a bounded diagnostic log live in `%LOCALAPPDATA%\Tailwatch`. Machine selections, ports, sort preference, and the reporting filter are kept separately for each Tailscale identity. The app runs without administrator access.
 
 When Tailscale is disconnected, use **Open Tailscale** to launch its Windows app, connect there, and return to Tailwatch. Discovery resumes automatically; **Retry** checks immediately. The disconnected panel hides machine controls until a network is available.
