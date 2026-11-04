@@ -24,7 +24,7 @@ Use PowerShell 7.2 or newer. Download all four CI artifacts into separate direct
 pwsh -NoProfile -File tests/package-release.tests.ps1
 node --test tests/package-workflow.tests.cjs
 pwsh -NoProfile -File scripts/package-release.ps1 `
-  -ArtifactRoot ./artifacts -OutputDirectory ./release-bundles -Version 0.2.0
+  -ArtifactRoot ./artifacts -OutputDirectory ./release-bundles -Version 0.2.1
 ```
 
 Choose a new output directory each time. Missing inputs, unexpected files, mismatched architecture, invalid/mismatched versions and an existing output directory all fail before output creation. The script never deletes an existing directory. An I/O failure after validation can leave partial output for inspection; retry with a fresh destination. The tests use header-only synthetic fixtures, so also run the script against real CI artifacts before changing release behavior.
