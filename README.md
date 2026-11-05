@@ -1,17 +1,69 @@
 # Tailwatch
 
-A small Windows system tray app for checking CPU, GPU, and RAM usage across your Tailscale machines.
+**CPU, GPU, and RAM usage across your Tailscale machines, right in your Windows tray.**
 
-Click the tray icon to open a compact panel. Search or sort machines, expand a row for GPU and memory details, and use **Reporting only** to hide machines that are not sending fresh Tailwatch metrics. Hidden machines keep being checked and reappear when they report again.
+See whether your GPU workstation is busy, your build server is idle, or a machine is running out of RAM. Tailwatch discovers devices through Tailscale and reads their metrics from a small agent on each machine. Click the tray icon for a live overview; expand a machine for hardware details and recent history.
 
-Expanded rows also show **15-minute CPU/GPU/RAM history**. It is kept only in this viewer's memory, starts collecting when the app runs, and clears when you disconnect or change tailnets. Missing or stale readings leave gaps instead of appearing as zero. The time and utilization scales stay fixed; opening a new graph does not stretch a few samples into a full history. Background sampling remains less frequent while the panel is closed.
+No central server, Tailscale API key, or SSH credentials. Metrics travel directly between your machines over Tailscale.
 
-## First run on Windows
+[**Download for Windows x64**](https://github.com/willherr72/Tailwatch/releases/download/v0.2.1/Tailwatch-v0.2.1-windows-x64.zip) · [All releases](https://github.com/willherr72/Tailwatch/releases) · [Get started](#get-started) · [Build from source](#build-and-test)
 
-1. Put `Tailwatch.exe` and `tailwatch-agent.exe` in the same folder.
-2. Connect Tailscale and run `Tailwatch.exe`.
-3. Click the green bars icon beside the clock. Windows may initially put it in the tray overflow menu.
-4. Use **Machines** to select devices and change an agent's port. Right-click the tray icon for startup and quit options.
+<p align="center">
+  <img src="docs/images/tailwatch.png" width="520" alt="Tailwatch's native Windows panel showing CPU, GPU, and RAM usage for a Linux GPU workstation, a Mac Studio, and a Windows desktop, plus an offline build server. Machines are sorted by GPU usage.">
+</p>
+<p align="center"><em>Actual Windows UI with fictional machines and sample readings.</em></p>
+
+## What you get
+
+- **A compact overview:** search machines, sort by CPU/GPU/RAM usage, or show only machines reporting fresh metrics.
+- **Hardware details and history:** expand a machine for per-GPU readings, memory usage, and 15-minute CPU/GPU/RAM graphs.
+- **Windows, Linux, and Mac agents:** monitor a mixed fleet from the Windows viewer.
+- **Clear availability:** offline, stale, and unsupported readings stay distinct from measured zero.
+- **Direct connections:** agents listen on loopback and their verified Tailscale addresses, and allow only explicitly configured viewer addresses.
+- **Local history:** graphs live in the viewer's memory. No history or telemetry is uploaded to an external service.
+
+## Platform support
+
+The **tray app runs on Windows x64**. Install an agent on each other machine you want to monitor.
+
+| Agent platform | CPU and RAM | GPU utilization |
+| --- | --- | --- |
+| Windows x64 | Yes | NVIDIA |
+| Linux x64 | Yes | NVIDIA |
+| macOS on Apple silicon | Yes | Apple GPU, via private macOS interfaces |
+
+AMD and Intel GPU collection is not implemented. NVIDIA monitoring uses the installed driver; no separate CUDA Toolkit is needed. Apple GPU support needs verification on each OS/chip combination. See [what the readings mean](#what-the-readings-mean) for details.
+
+**Early preview:** downloads are unsigned. The viewer follows one active tailnet at a time, and history is kept only for the current session. There is no auto-updater.
+
+## Get started
+
+1. Connect Tailscale on your Windows PC.
+2. [Download the Windows x64 ZIP](https://github.com/willherr72/Tailwatch/releases/download/v0.2.1/Tailwatch-v0.2.1-windows-x64.zip) and extract it. Keep `Tailwatch.exe` and `tailwatch-agent.exe` together.
+3. Run `Tailwatch.exe`, then click the green bars icon beside the clock. Windows may initially put it in the tray overflow menu. Your PC's local agent starts automatically.
+4. To monitor another computer, connect it to the same tailnet, then choose **Machines → Set up selected machine…** in Tailwatch. Follow the generated installation instructions on that computer and click **Refresh** in the viewer.
+
+The viewer runs without administrator access. Installing a remote Windows service requires an elevated PowerShell; the Linux system service requires sudo; the Mac agent runs as the signed-in user. You can also [install agents manually](#install-remote-agents).
+
+## Using Tailwatch
+
+Search or sort machines, expand a row for GPU and memory details, and use **Reporting only** to hide machines that are not sending fresh Tailwatch metrics. Hidden machines keep being checked and reappear when they report again. Use **Machines** to select devices and change an agent's port. Right-click the tray icon for startup and quit options.
+
+Expanded rows show **15-minute CPU/GPU/RAM history**. It is kept only in this viewer's memory, starts collecting when the app runs, and clears when you disconnect or change tailnets. Missing or stale readings leave gaps instead of appearing as zero. The time and utilization scales stay fixed; opening a new graph does not stretch a few samples into a full history. Background sampling remains less frequent while the panel is closed.
+
+<details>
+<summary>See hardware details and history</summary>
+
+<p align="center">
+  <img src="docs/images/tailwatch-history.png" width="520" alt="An expanded GPU workstation in Tailwatch showing hardware details and separate CPU, GPU, and RAM graphs over the last 15 minutes. Gaps indicate missing samples.">
+</p>
+
+Actual Windows UI with fictional hardware and sample history.
+
+</details>
+
+<details>
+<summary>Agent setup, updates, and local settings</summary>
 
 For another machine, select it in **Machines → Set up selected machine…**, or right-click the tray icon and choose **Set up an agent…**. Select Windows x64, Linux x64, or Apple silicon; download and extract the ZIP on that machine, then copy the generated install command. It includes this viewer's current Tailscale addresses. Setup does not run remote commands automatically and invalidates its command if the active tailnet changes. Windows service installation needs an elevated PowerShell; Linux's packaged system service needs sudo; the Mac installer runs as the signed-in user.
 
@@ -26,6 +78,8 @@ The viewer supervises the local helper it starts and retries after a crash or an
 Settings and a bounded diagnostic log live in `%LOCALAPPDATA%\Tailwatch`. Machine selections, ports, sort preference, and the reporting filter are kept separately for each Tailscale identity. The app runs without administrator access.
 
 When Tailscale is disconnected, use **Open Tailscale** to launch its Windows app, connect there, and return to Tailwatch. Discovery resumes automatically; **Retry** checks immediately. The disconnected panel hides machine controls until a network is available.
+
+</details>
 
 ## Multiple tailnets
 
@@ -177,4 +231,6 @@ The protocol example in `protocol/snapshot.example.json` contains fictional valu
 - `scripts/`: packaging and install/uninstall instructions.
 - `tests/`: viewer tests and native UI smoke checks.
 
-MIT licensed. Built using [sysinfo](https://github.com/GuillaumeGomez/sysinfo), [nvml-wrapper](https://github.com/Cldfire/nvml-wrapper), [macmon](https://github.com/vladkens/macmon), and .NET Windows Forms.
+Found a bug or have a suggestion? [Open an issue](https://github.com/willherr72/Tailwatch/issues). For GPU problems, include your OS, GPU model, and whether CPU/RAM readings work. Remove private machine names and addresses from logs or screenshots before sharing.
+
+[MIT licensed](LICENSE). Built using [sysinfo](https://github.com/GuillaumeGomez/sysinfo), [nvml-wrapper](https://github.com/Cldfire/nvml-wrapper), [macmon](https://github.com/vladkens/macmon), and .NET Windows Forms. Tailwatch is an independent project and is not affiliated with Tailscale.
