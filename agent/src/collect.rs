@@ -51,7 +51,7 @@ pub struct Collector {
     sequence: u64,
     node_id: String,
     #[cfg(any(target_os = "windows", target_os = "linux"))]
-    nvidia_gpu: GpuCache,
+    nvidia_gpu: crate::gpu_worker::GpuWorker,
     #[cfg(target_os = "macos")]
     mac_gpu: Arc<RwLock<Option<(f64, Instant)>>>,
 }
@@ -66,7 +66,7 @@ impl Collector {
             sequence: 0,
             node_id,
             #[cfg(any(target_os = "windows", target_os = "linux"))]
-            nvidia_gpu: start_nvidia_gpu(),
+            nvidia_gpu: crate::gpu_worker::GpuWorker::start(),
             #[cfg(target_os = "macos")]
             mac_gpu: start_mac_gpu(),
         })
@@ -112,7 +112,7 @@ impl Collector {
     }
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     fn gpus(&mut self) -> (Vec<GpuReading>, String) {
-        cached_gpus(&self.nvidia_gpu)
+        cached_gpus(&self.nvidia_gpu.cache)
     }
     #[cfg(target_os = "macos")]
     fn gpus(&mut self) -> (Vec<GpuReading>, String) {
@@ -201,139 +201,4 @@ pub fn start(cache: Cache, node_id: String) {
             std::thread::sleep(Duration::from_secs(2).saturating_sub(started.elapsed()));
         }
     });
-}
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-struct NvidiaCollector {
-    nvml: Option<nvml_wrapper::Nvml>,
-    last_nvml_attempt: Instant,
-    reconnect: bool,
-}
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn transient_nvml_error(error: &nvml_wrapper::error::NvmlError) -> bool {
-    use nvml_wrapper::error::NvmlError;
-    matches!(
-        error,
-        NvmlError::Unknown
-            | NvmlError::Uninitialized
-            | NvmlError::GpuLost
-            | NvmlError::DriverNotLoaded
-            | NvmlError::ResetRequired
-    )
-}
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-impl NvidiaCollector {
-    fn gpus(&mut self) -> (Vec<GpuReading>, String) {
-        self.reconnect = false;
-        let result = self.collect_gpus();
-        if self.reconnect && self.nvml.is_some() {
-            // Drop/shutdown the old NVML session before opening a fresh one. Some
-            // laptop drivers leave a session returning Unknown after a power transition.
-            // Retry at most once per two-second sample; failed initialization backs off.
-            self.nvml = None;
-            self.nvml = nvml_wrapper::Nvml::init().ok();
-            self.last_nvml_attempt = Instant::now();
-            self.reconnect = false;
-            return self.collect_gpus();
-        }
-        result
-    }
-    fn collect_gpus(&mut self) -> (Vec<GpuReading>, String) {
-        if self.nvml.is_none() && self.last_nvml_attempt.elapsed() >= Duration::from_secs(30) {
-            self.nvml = nvml_wrapper::Nvml::init().ok();
-            self.last_nvml_attempt = Instant::now();
-        }
-        let Some(nvml) = &self.nvml else {
-            return (vec![], "unsupported_or_driver_missing".into());
-        };
-        let count = match nvml.device_count() {
-            Ok(n) => n,
-            Err(e) => {
-                self.reconnect |= transient_nvml_error(&e);
-                return (vec![], "collection_failed".into());
-            }
-        };
-        let mut gpus = vec![];
-        let mut partial = false;
-        for index in 0..count.min(64) {
-            let device = match nvml.device_by_index(index) {
-                Ok(device) => device,
-                Err(e) => {
-                    self.reconnect |= transient_nvml_error(&e);
-                    partial = true;
-                    continue;
-                }
-            };
-            let id = match device.uuid() {
-                Ok(id) => id,
-                Err(e) => {
-                    self.reconnect |= transient_nvml_error(&e);
-                    partial = true;
-                    continue;
-                }
-            };
-            let utilization = device
-                .utilization_rates()
-                .map(|u| Reading::measured(u.gpu as f64))
-                .unwrap_or_else(|e| {
-                    self.reconnect |= transient_nvml_error(&e);
-                    Reading::unavailable(&format!("nvml_{e:?}"))
-                });
-            let memory = device.memory_info().ok().map(|m| MemoryReading {
-                used_bytes: Some(m.used),
-                total_bytes: Some(m.total),
-                status: "ok".into(),
-                age_ms: 0,
-                source: "NVML dedicated memory".into(),
-            });
-            if !utilization.fresh() {
-                partial = true
-            }
-            gpus.push(GpuReading {
-                id,
-                name: device.name().unwrap_or_else(|_| "NVIDIA GPU".into()),
-                vendor: "NVIDIA".into(),
-                utilization,
-                metric: "active_time".into(),
-                memory,
-            });
-        }
-        (
-            gpus,
-            if partial {
-                "partial"
-            } else if count == 0 {
-                "unsupported"
-            } else {
-                "ok"
-            }
-            .into(),
-        )
-    }
-}
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn start_nvidia_gpu() -> GpuCache {
-    let cache = Arc::new(RwLock::new(None));
-    let output = Arc::downgrade(&cache);
-    std::thread::spawn(move || {
-        let mut collector = NvidiaCollector {
-            nvml: nvml_wrapper::Nvml::init().ok(),
-            last_nvml_attempt: Instant::now(),
-            reconnect: false,
-        };
-        loop {
-            let started = Instant::now();
-            let (readings, status) = collector.gpus();
-            let Some(cache) = output.upgrade() else { break };
-            if let Ok(mut current) = cache.write() {
-                *current = Some(GpuSample {
-                    readings,
-                    status,
-                    captured: started,
-                });
-            }
-            drop(cache);
-            std::thread::sleep(Duration::from_secs(2).saturating_sub(started.elapsed()));
-        }
-    });
-    cache
 }

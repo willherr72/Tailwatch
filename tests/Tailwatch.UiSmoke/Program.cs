@@ -35,7 +35,10 @@ internal static class Program
         }
         finally{Console.OutputEncoding=encoding;Environment.SetEnvironmentVariable("TAILWATCH_TAILSCALE",executable);}
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
         Application.EnableVisualStyles();
+        CheckTrayDisposal();
+        CheckFailureDetails();
         CheckTrayPlacement();
         CheckAgentSetup(args.Length>0?Path.ChangeExtension(args[0],"setup.png"):null);
         using var panel=new TrayPanel();
@@ -100,7 +103,7 @@ internal static class Program
             using var menuImage=new Bitmap(sortMenu.Width,sortMenu.Height);sortMenu.DrawToBitmap(menuImage,sortMenu.ClientRectangle);
             menuImage.Save(Path.ChangeExtension(args[0],"menu.png"));sortMenu.Close();
         }
-        Console.WriteLine("Native UI smoke passed: first and repeated tray placement, setup/platform and stale-address protection, expanded history graphs, reporting filter and recovery, account menu and CLI success/failure/cancellation, UTF-8 process output, scrollbar drag/keys/wheel, steady 43-machine refresh, search, DPI, offline recovery, close action.");
+        Console.WriteLine("Native UI smoke passed: actual tray Quit and repeated disposal with owned child/pending discovery, failure details and accessible recovery, first and repeated tray placement, setup/platform and stale-address protection, expanded history graphs, reporting filter and recovery, account menu and CLI success/failure/cancellation, UTF-8 process output, scrollbar drag/keys/wheel, steady 43-machine refresh, search, DPI, offline recovery, close action.");
     }
     static void CheckTrayPlacement()
     {
@@ -125,6 +128,76 @@ internal static class Program
             }
         }
         finally{Cursor.Position=cursor;}
+    }
+    static void CheckTrayDisposal()
+    {
+        var prior=Environment.GetEnvironmentVariable("TAILWATCH_TAILSCALE");
+        try
+        {
+            Environment.SetEnvironmentVariable("TAILWATCH_TAILSCALE",Environment.ProcessPath);
+            foreach(bool quit in new[]{false,true,true})
+            {
+                var listener=new System.Net.Sockets.TcpListener(IPAddress.Loopback,0);listener.Start();
+                int port=((IPEndPoint)listener.LocalEndpoint).Port;listener.Stop();
+                var settings=Path.Combine(Path.GetTempPath(),"tailwatch-ui-"+Guid.NewGuid()+".json");
+                var preferences=new AppSettings();preferences.For("test.ts.net|test-self").Ports["test-self"]=port;preferences.Save(settings);
+                var supervisor=new LocalAgentSupervisor(()=>
+                {
+                    var start=new System.Diagnostics.ProcessStartInfo(Path.Combine(AppContext.BaseDirectory,"fixture","Tailwatch.AgentFixture.exe"));
+                    start.Environment["DOTNET_ROOT"]=Path.GetFullPath(Path.Combine(System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory(),"../../.."));
+                    start.ArgumentList.Add(port.ToString());start.ArgumentList.Add("snapshot-hang");start.ArgumentList.Add(settings+".pending");return start;
+                },new(){Port=port,PollInterval=TimeSpan.FromMilliseconds(50)});
+                try
+                {
+                    using var show=new EventWaitHandle(false,EventResetMode.AutoReset);
+                    using var context=new TrayContext(show,supervisor,settings);
+                    int? child=null;
+                    if(quit)
+                    {
+                        using var stop=new System.Windows.Forms.Timer{Interval=25};var elapsed=System.Diagnostics.Stopwatch.StartNew();
+                        bool opened=false;
+                        stop.Tick+=(_,_)=>
+                        {
+                            if(elapsed.Elapsed>TimeSpan.FromSeconds(10))throw new Exception("Tray supervisor did not launch fixture");
+                            if(supervisor.Status!="Local agent responding")return;
+                            if(!opened){opened=true;show.Set();}
+                            if(!File.Exists(settings+".pending"))return;
+                            child=supervisor.OwnedProcessId;stop.Stop();context.ExitThread();
+                        };
+                        stop.Start();Application.Run(context);
+                        if(child==null)throw new Exception("Actual tray lifetime never owned a helper");
+                    }
+                    context.Dispose();context.Dispose();context.ExitThread();
+                    for(int i=0;i<10;i++){Application.DoEvents();Thread.Sleep(25);}
+                    if(supervisor.OwnedProcessId!=null)throw new Exception("Tray quit retained owned helper");
+                    if(child.HasValue)
+                    {
+                        try{using var process=System.Diagnostics.Process.GetProcessById(child.Value);if(!process.HasExited)throw new Exception("Tray quit orphaned fixture process");}
+                        catch(ArgumentException){}
+                    }
+                }
+                finally{supervisor.DisposeAsync().AsTask().GetAwaiter().GetResult();File.Delete(settings);File.Delete(settings+".pending");}
+            }
+        }
+        finally{Environment.SetEnvironmentVariable("TAILWATCH_TAILSCALE",prior);}
+    }
+    static void CheckFailureDetails()
+    {
+        var row=new MachineState(new("failure","Test machine","windows",[IPAddress.Loopback],true),true,"Stale",LastSuccess:DateTimeOffset.Now.AddMinutes(-1),FailureReason:"Access denied");
+        using var form=new Form{StartPosition=FormStartPosition.Manual,Location=new Point(-2000,-2000),Size=new Size(550,600)};
+        using var card=new MachineCard(row){Width=500};form.Controls.Add(card);form.Show();Application.DoEvents();
+        card.Controls.OfType<Button>().Single().PerformClick();Application.DoEvents();
+        var detail=card.Controls.OfType<Label>().Single(l=>l.Text.Contains("Last reading"));
+        if(!detail.Text.Contains("Access denied"))throw new Exception("Stale machine details lost authorization failure");
+        var status=card.Controls.OfType<Label>().Single(l=>l.Text=="Stale");
+        if(status.AccessibleDescription?.Contains("Access denied")!=true||status.AccessibleDescription?.Contains("Last reading")!=true)throw new Exception("Accessible status lost failure reason or last success");
+        card.UpdateState(row with {Status="Live",FailureReason=null});
+        if(status.AccessibleDescription?.Contains("Access denied")==true)throw new Exception("Recovered status retains failure reason");
+        if(Find(card).OfType<Meter>().Any(m=>m.Value!=null))throw new Exception("Unavailable readings became fake metrics");
+        var gpuFailure=new Snapshot{GpuStatus="worker_timeout"};
+        card.UpdateState(row with {Status="Live",FailureReason=null,Snapshot=gpuFailure,Cpu=20,Ram=30});
+        if(!detail.Text.Contains("GPU worker stopped responding; retrying")||status.AccessibleDescription?.Contains("GPU worker stopped responding")!=true)throw new Exception("GPU failure detail was lost while CPU/RAM stayed live");
+        if(Find(card).OfType<Meter>().Single(m=>m.Caption=="GPU").Value!=null)throw new Exception("Unavailable GPU became a fake reading");
     }
     static IEnumerable<Control> Find(Control parent)=>parent.Controls.Cast<Control>().SelectMany(c=>new[]{c}.Concat(Find(c)));
     static void CheckAgentSetup(string? capture)

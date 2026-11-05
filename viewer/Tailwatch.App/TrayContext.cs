@@ -1,6 +1,4 @@
 using System.Diagnostics;
-using System.Net;
-using System.Net.Sockets;
 using Microsoft.Win32;
 using Tailwatch.Core;
 namespace Tailwatch.App;
@@ -11,17 +9,25 @@ internal sealed class TrayContext : ApplicationContext
     readonly TrayPanel panel=new();
     readonly System.Windows.Forms.Timer timer=new(){Interval=500};
     readonly EventWaitHandle show;
-    readonly string settingsPath=Path.Combine(Log.Folder,"settings.json");
+    readonly string settingsPath;
     readonly AppSettings settings;
     readonly TailwatchMonitor monitor;
     readonly HttpClient http=new(new SocketsHttpHandler{UseProxy=false,AllowAutoRedirect=false,ConnectTimeout=TimeSpan.FromSeconds(2),MaxConnectionsPerServer=2}){Timeout=Timeout.InfiniteTimeSpan};
     readonly CancellationTokenSource lifetime=new();
-    Process? agent;
-    bool busy,ending,switching;
+    readonly CancellationToken lifetimeToken;
+    readonly LocalAgentSupervisor agent;
+    bool busy,ending,switching,disposed;
     int directoryGeneration,accountRequest;
     DateTime next=DateTime.MinValue;
-    public TrayContext(EventWaitHandle show)
+    public TrayContext(EventWaitHandle show,LocalAgentSupervisor? localAgent=null,string? configurationPath=null)
     {
+        lifetimeToken=lifetime.Token;settingsPath=configurationPath??Path.Combine(Log.Folder,"settings.json");
+        agent=localAgent??new LocalAgentSupervisor(()=>
+        {
+            var start=new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory,"tailwatch-agent.exe"));
+            start.ArgumentList.Add("run");start.ArgumentList.Add("--local-only");return start;
+        },log:Log.Write);
+        agent.SetNetworkAvailable(false);
         this.show=show;settings=AppSettings.Load(settingsPath);monitor=new(http,settings);drawing=Theme.Icon();
         var menu=Theme.Menu();
         menu.Items.Add("Open",null,(_,_)=>Toggle(true));menu.Items.Add("Machines…",null,(_,_)=>OpenSettings());
@@ -45,23 +51,24 @@ internal sealed class TrayContext : ApplicationContext
             if(panel.Visible)UpdatePanel();
             if(DateTime.UtcNow>=next)await RefreshAsync(false);
         };
-        timer.Start();_=StartLocalAgentAsync();_=RefreshAsync(true);
+        timer.Start();agent.Start();_=RefreshAsync(true);
     }
     void Save(){try{settings.Save(settingsPath);}catch(Exception e)when(e is IOException or UnauthorizedAccessException){Log.Write("Could not save settings: "+e.Message);}}
     void Toggle(bool open)
     {
+        if(ending)return;
         if(!open){panel.Hide();return;}
         UpdatePanel();panel.ShowNearTray();next=DateTime.MinValue;_=RefreshAsync(true);
     }
     void OpenSettings()
     {
-        if(switching)return;
+        if(switching||ending)return;
         panel.Hide();using var dialog=new SettingsForm(monitor,Save,OpenSetup);dialog.ShowDialog();
         next=DateTime.MinValue;_=RefreshAsync(true);
     }
     void OpenSetup(string? machineId)
     {
-        if(switching)return;
+        if(switching||ending)return;
         panel.Hide();using var dialog=new AgentSetupForm(monitor,machineId);dialog.ShowDialog();
     }
     void OpenDownloads()
@@ -84,19 +91,22 @@ internal sealed class TrayContext : ApplicationContext
     void UpdatePanel()
     {
         if(ending)return;
-        panel.UpdateMachines(monitor.NetworkName,monitor.Machines,monitor.Error);
+        var rows=monitor.Machines.Select(row=>row.Peer.IsSelf&&row.Status!="Live"&&agent.Status is not ("Local agent responding" or "Using externally managed local agent")
+            ?row with {FailureReason=string.Join(". ",new[]{row.FailureReason,agent.Status}.Where(s=>!string.IsNullOrEmpty(s)))}:row).ToList();
+        panel.UpdateMachines(monitor.NetworkName,rows,monitor.Error);
         var live=monitor.Machines.Count(m=>m.Status=="Live");
         icon.Text=$"Tailwatch · {live} reporting";
     }
     async Task LoadAccountsAsync()
     {
+        if(ending)return;
         int request=++accountRequest;
         try
         {
-            var accounts=await Tailscale.ReadAccountsAsync(lifetime.Token);
+            var accounts=await Tailscale.ReadAccountsAsync(lifetimeToken);
             if(!ending&&request==accountRequest)panel.SetAccounts(accounts);
         }
-        catch(OperationCanceledException)when(lifetime.IsCancellationRequested){}
+        catch(OperationCanceledException)when(lifetimeToken.IsCancellationRequested){}
         catch(Exception e)when(e is IOException or ProtocolException or OperationCanceledException or System.ComponentModel.Win32Exception)
         {
             if(!ending&&request==accountRequest)panel.SetAccounts(null,"Accounts unavailable. Open Tailscale below.");
@@ -106,10 +116,11 @@ internal sealed class TrayContext : ApplicationContext
     {
         if(switching||ending||account.Selected)return;
         switching=true;directoryGeneration++;accountRequest++;
+        agent.SetNetworkAvailable(false);
         monitor.Disconnect("Switching tailnet…");panel.SetSwitching(account.Tailnet.Length>0?account.Tailnet:account.Nickname);UpdatePanel();
         string? failure=null;
-        try{await Tailscale.SwitchAccountAsync(account.Id,lifetime.Token);}
-        catch(OperationCanceledException)when(lifetime.IsCancellationRequested){}
+        try{await Tailscale.SwitchAccountAsync(account.Id,lifetimeToken);}
+        catch(OperationCanceledException)when(lifetimeToken.IsCancellationRequested){}
         catch(Exception e)when(e is IOException or ProtocolException or OperationCanceledException or System.ComponentModel.Win32Exception)
         {
             failure=e is ProtocolException?e.Message:e is OperationCanceledException?"The account switch timed out. Check the active account in Tailscale.":"Could not switch accounts. Check that Tailscale is running.";
@@ -134,51 +145,32 @@ internal sealed class TrayContext : ApplicationContext
         busy=true;
         try
         {
-            var directory=await Tailscale.ReadAsync(lifetime.Token);
+            var directory=await Tailscale.ReadAsync(lifetimeToken);
             if(ending||generation!=directoryGeneration)return;
             bool changed=directory.Key!=monitor.NetworkKey;
             monitor.SetDirectory(directory);
+            agent.SetNetworkAvailable(true);
             if(changed){var profile=settings.For(directory.Key);panel.SetSort(profile.Sort);panel.SetReportingOnly(profile.ReportingOnly);}
             UpdatePanel();
             // Discovery must keep running even while remote peers are timing out.
             _=PollAndRenderAsync(force);
         }
-        catch(OperationCanceledException)when(lifetime.IsCancellationRequested){}
+        catch(OperationCanceledException)when(lifetimeToken.IsCancellationRequested){}
         catch(Exception e)when(e is IOException or ProtocolException or OperationCanceledException or System.ComponentModel.Win32Exception)
         {
             if(ending||generation!=directoryGeneration)return;
+            agent.SetNetworkAvailable(false);
             var message=e is ProtocolException?e.Message:"Tailscale is unavailable. Check that it is running.";
             if(e is ProtocolException {Disconnected:true})monitor.Disconnect(message);
             else monitor.DiscoveryFailed(message);
             UpdatePanel();
         }
-        finally{busy=false;next=generation!=directoryGeneration?DateTime.MinValue:DateTime.UtcNow.AddSeconds(panel.Visible?2:15);}
+        finally{busy=false;if(!ending)next=generation!=directoryGeneration?DateTime.MinValue:DateTime.UtcNow.AddSeconds(panel.Visible?2:15);}
     }
     async Task PollAndRenderAsync(bool force)
     {
-        try{await monitor.PollAsync(force,lifetime.Token);UpdatePanel();}
-        catch(OperationCanceledException)when(lifetime.IsCancellationRequested){}
-    }
-    async Task StartLocalAgentAsync()
-    {
-        var path=Path.Combine(AppContext.BaseDirectory,"tailwatch-agent.exe");
-        if(!File.Exists(path)){Log.Write("Local agent executable not found beside Tailwatch.exe.");return;}
-        try
-        {
-            using var check=new TcpClient();
-            try{await check.ConnectAsync(IPAddress.Loopback,48173,lifetime.Token);return;}
-            catch(SocketException){}
-            if(ending)return;
-            var start=new ProcessStartInfo(path){UseShellExecute=false,CreateNoWindow=true,WindowStyle=ProcessWindowStyle.Hidden,RedirectStandardError=true};
-            start.ArgumentList.Add("run");start.ArgumentList.Add("--local-only");
-            agent=Process.Start(start);
-            if(agent!=null)
-            {
-                agent.ErrorDataReceived+=(_,e)=>{if(e.Data!=null)Log.Write("Local agent: "+e.Data);};
-                agent.BeginErrorReadLine();
-            }
-        }
-        catch(Exception e)when(e is IOException or System.ComponentModel.Win32Exception or OperationCanceledException){Log.Write("Local agent: "+e.Message);}
+        try{await monitor.PollAsync(force,lifetimeToken);UpdatePanel();}
+        catch(OperationCanceledException)when(lifetimeToken.IsCancellationRequested){}
     }
     static bool StartupEnabled()
     {
@@ -193,16 +185,24 @@ internal sealed class TrayContext : ApplicationContext
     }
     protected override void ExitThreadCore()
     {
-        ending=true;timer.Stop();lifetime.Cancel();icon.Visible=false;Save();
-        if(agent!=null){try{if(!agent.HasExited)agent.Kill(true);}catch(InvalidOperationException){}}
+        if(!ending){EndLifetime();Save();}
         base.ExitThreadCore();
+    }
+    void EndLifetime()
+    {
+        if(ending)return;
+        ending=true;timer.Stop();lifetime.Cancel();icon.Visible=false;
+        // Supervisor continuations never capture the UI synchronization context.
+        // Reap the owned process before the application's message loop exits.
+        agent.StopAsync().GetAwaiter().GetResult();
     }
     protected override void Dispose(bool disposing)
     {
-        if(disposing)
+        if(disposing&&!disposed)
         {
-            ending=true;lifetime.Cancel();timer.Dispose();monitor.Dispose();http.Dispose();
-            icon.Visible=false;icon.ContextMenuStrip?.Dispose();icon.Dispose();drawing.Dispose();panel.Dispose();agent?.Dispose();
+            disposed=true;EndLifetime();timer.Dispose();monitor.Dispose();http.Dispose();
+            icon.ContextMenuStrip?.Dispose();icon.Dispose();drawing.Dispose();panel.Dispose();
+            agent.DisposeAsync().AsTask().GetAwaiter().GetResult();lifetime.Dispose();
         }
         base.Dispose(disposing);
     }

@@ -66,7 +66,12 @@ internal sealed class MachineCard : UserControl
     {
         state=value;
         title.AccessibleName=$"{value.Peer.Name}. Expand machine details";
-        status.Text=value.Status=="Live"?value.Peer.Os:value.Status;tooltip.SetToolTip(status,status.Text);
+        status.Text=value.Status=="Live"?value.Peer.Os:value.Status;
+        var description=new List<string>{value.Status};
+        if(value.FailureReason!=null)description.Add(value.FailureReason);
+        if(value.Status=="Live"&&value.Snapshot?.GpuStatus.StartsWith("worker_",StringComparison.Ordinal)==true)description.Add(GpuStatus(value.Snapshot.GpuStatus));
+        if(value.LastSuccess.HasValue)description.Add($"Last reading {value.LastSuccess.Value.ToLocalTime():HH:mm:ss}");
+        status.AccessibleDescription=string.Join(". ",description);tooltip.SetToolTip(status,status.AccessibleDescription);
         cpu.Value=value.Cpu;gpu.Value=value.Gpu;gpu.Partial=value.PartialGpu;ram.Value=value.Ram;
         history.UpdateHistory(value.History);
         foreach(var meter in new[]{cpu,gpu,ram})meter.Invalidate();
@@ -74,6 +79,14 @@ internal sealed class MachineCard : UserControl
     }
     public static string Memory(MemoryReading? m)=>m?.UsedBytes is ulong used && m.TotalBytes is ulong total && m.Status=="ok" && m.AgeMs<=10000
         ?$"{used/1073741824.0:0.0} / {total/1073741824.0:0.#} GiB":"Unavailable";
+    static string GpuStatus(string value)=>value switch
+    {
+        "worker_exited"=>"GPU worker exited; retrying",
+        "worker_timeout"=>"GPU worker stopped responding; retrying",
+        "worker_invalid_output"=>"GPU worker returned an invalid sample; retrying",
+        "worker_start_failed"=>"GPU worker could not start; retrying",
+        _=>"GPU monitoring unavailable: "+value.Replace('_',' ')
+    };
     void UpdateDetails()
     {
         title.Text=$"{(expanded?"▾":"▸")}  {state.Peer.Name}{(state.Peer.IsSelf?"  · this PC":"")}";
@@ -83,7 +96,7 @@ internal sealed class MachineCard : UserControl
         if(s!=null && state.Status=="Live")
         {
             lines.Add($"{s.Cpu.Model}  ·  {s.Cpu.LogicalCores} logical CPUs");lines.Add("RAM  "+Memory(s.Ram));
-            if(s.Gpus.Count==0)lines.Add("GPU monitoring unavailable: "+s.GpuStatus.Replace('_',' '));
+            if(s.Gpus.Count==0)lines.Add(GpuStatus(s.GpuStatus));
             foreach(var g in s.Gpus)
             {
                 lines.Add($"{g.Name}  ·  {(g.Utilization.IsFresh?$"{g.Utilization.Value:0}% active":"Unavailable")}");
@@ -94,6 +107,7 @@ internal sealed class MachineCard : UserControl
         }
         else
         {
+            if(state.FailureReason!=null)lines.Add(state.FailureReason);
             lines.Add(state.Status switch {
                 "Agent unavailable"=>"Install and start the Tailwatch agent on this machine.",
                 "Access denied"=>"Add this viewer's Tailscale address to the agent's allowed peers.",

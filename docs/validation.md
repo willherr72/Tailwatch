@@ -1,5 +1,34 @@
 # Initial prototype validation — 2026-11-03
 
+## Reliability pass — 2026-11-04
+
+Windows Application events identified two concrete failures on the installed build: an NVIDIA `nvml.dll` access violation terminated the local agent, and repeated monitor disposal raised `ObjectDisposedException` during viewer shutdown. After the agent crash, the viewer remained running while loopback port 48173 refused connections. The previous tests did not exercise supervision of the local agent or a native GPU crash across a process boundary.
+
+The reliability checks use real owned fixture processes and unused loopback ports. `tests/reliability-agent-smoke.ps1` starts the actual agent with a synthetic Tailscale identity, kills and suspends only its GPU worker, checks uninterrupted CPU/RAM with an unchanged agent boot ID, and verifies worker exit when its parent dies. `tests/package-viewer-smoke.ps1` additionally requires the actual packaged viewer to recover after its local helper is killed. The latter remains restricted to isolated GitHub-hosted Windows runners to avoid sharing the real viewer's singleton and port.
+
+The GPU isolation script failed against the previous agent because no separate GPU worker existed; it cleaned up its test process. Integration then caught a real pipe-ownership issue: Tokio's process wait closed the worker stdin pipe. A production-worker persistence regression failed before the fix, and the supervisor now retains that pipe explicitly.
+
+Executed on Windows:
+
+- 80 viewer tests passed, including real-process supervision, retry limits, occupied/external service ownership, repeated disposal, and failure detail recovery. Four additional regressions first failed for dead sampler health, hung/oversized health responses, and a disconnect during a pending health request; all pass after bounded health parsing and connectivity rechecking.
+- Native UI smoke passed, including actual `Application.Run(TrayContext)` and Quit, repeated disposal, and a fixture marker proving a snapshot request was pending at shutdown. Existing placement, filtering, history, switching, and rendering checks also passed.
+- Rust's 13 existing tests and its new process harness passed, as did formatting and Clippy with warnings denied. The harness covers worker crashes, partial/malformed/oversized output, missing executable, hang, retry/recovery, blocked output, EOF, and parent death.
+- Both debug and optimized Windows agent builds passed `reliability-agent-smoke.ps1`: worker crash/hang preserved advancing CPU/RAM and the agent boot ID, timeout cleared GPU data, replacement occurred, and abrupt parent exit left no GPU worker.
+- A 61-second synthetic-identity run exercised the read-only soak recorder: 30 observations, 29 fresh, one startup-unavailable observation, no agent restarts, and maximum gap 2.76 seconds. This is a recorder smoke check, not the multi-hour acceptance run.
+- Packaging's 17 tests and the draft-workflow's 20 tests passed. The expanded packaged-viewer crash-recovery check is wired into isolated Windows CI; that hosted check has not yet run for this branch.
+
+Installed Windows validation of implementation commit `f1a1039`:
+
+- Replaced viewer and local agent together and verified both installed file hashes against the build. The existing startup entry still points to the installed viewer.
+- Killed the viewer-owned local agent alone. The viewer remained running and restored fresh CPU/RAM/GPU readings in 5.33 seconds, with exactly one replacement local agent.
+- Exercised the installed tray's Quit action repeatedly. The observed native exit code was 0; process-handle waits confirmed both the owned agent and GPU worker exited. An initial immediate process-list check raced descendant exit, so the final check waits for each recorded child handle rather than treating a transient process-list entry as an orphan.
+- No new viewer crash event was found during the updated-app quit checks. The old build reproduced its disposal crash when it was quit for replacement; that event predates the new installation.
+- Started a two-hour read-only observation at 2026-11-04 20:18 UTC. Evidence is under the worktree's ignored `dist/reliability/`, with its process ID and file paths in `installed-soak-run.json`. The run is pending; it is not yet a passed acceptance check.
+
+The new cross-platform Rust changes still require Linux/macOS CI execution. No public reliability release has been published.
+
+Physical sleep/wake, reboot/sign-in, and a multi-hour soak remain required before claiming those lifecycle paths reliable. Short automated tests do not substitute for these checks.
+
 ## v0.2 setup, history, and distribution checks
 
 - Viewer core: 62 tests passed, including monotonic history retention and point bounds, duplicate suppression, missing metrics, restart and short-discovery gaps, network isolation, platform-specific install/update commands, rejected addresses, and custom-port guidance.
